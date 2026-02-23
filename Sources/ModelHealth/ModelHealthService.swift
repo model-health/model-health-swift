@@ -746,7 +746,7 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/createSubject(parameters:)``
     func createSubject(parameters: SubjectParameters) async throws -> Subject
 
-    /// See ``ModelHealthService/calibrateCamera(_:checkerboardDetails:statusUpdate:)``
+    /// See ``ModelHealthService/record(activityNamed:in:)``
     func record(activityNamed name: String, in session: Session) async throws -> Activity
 
     /// See ``ModelHealthService/stopRecording(_:)``
