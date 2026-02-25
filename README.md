@@ -22,7 +22,7 @@ Or add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/model-health/model-health-swift", from: "0.1.30")
+    .package(url: "https://github.com/model-health/model-health-swift", from: "0.1.31")
 ]
 ```
 
