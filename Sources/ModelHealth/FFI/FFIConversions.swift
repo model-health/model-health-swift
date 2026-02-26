@@ -216,21 +216,6 @@ extension AnalysisTaskStatus {
     }
 }
 
-extension AnalysisResult {
-    internal static func from(jsonString: String) throws -> AnalysisResult {
-        guard let data = jsonString.data(using: .utf8) else {
-            throw FFIConversionError.invalidData("Failed to convert JSON string to data")
-        }
-
-        do {
-            let codable = try JSONDecoder().decode(CodableAnalysisResult.self, from: data)
-            return codable.toPublic()
-        } catch {
-            throw FFIConversionError.invalidData("Failed to decode AnalysisResult: \(error)")
-        }
-    }
-}
-
 extension CalibrationStatus {
     internal static func from(jsonString: String) throws -> CalibrationStatus {
         guard let data = jsonString.data(using: .utf8) else {
@@ -476,84 +461,6 @@ extension AnalysisResultDataType {
 }
 
 // MARK: - Internal Codable Types for FFI Deserialization
-
-private struct CodableAnalysisResult: Codable {
-    let metrics: [String: CodableMetric]
-
-    func toPublic() -> AnalysisResult {
-        AnalysisResult(
-            metrics: metrics.mapValues { $0.toPublic() }
-        )
-    }
-}
-
-private struct CodableMetric: Codable {
-    let label: String
-    let bilateral: Bool
-    let value: CodableMetricValue
-    let info: String
-    let decimalPlaces: Int
-
-    enum CodingKeys: String, CodingKey {
-        case label
-        case bilateral
-        case value
-        case info
-        case decimalPlaces = "decimal_places"
-    }
-
-    func toPublic() -> AnalysisResult.Metric {
-        AnalysisResult.Metric(
-            label: label,
-            bilateral: bilateral,
-            value: value.toPublic(),
-            info: info,
-            decimalPlaces: decimalPlaces
-        )
-    }
-}
-
-private enum CodableMetricValue: Codable {
-    case single(Double)
-    case bilateral(left: Double, right: Double)
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-
-        if let single = try? container.decode(Double.self) {
-            self = .single(single)
-        } else if let bilateral = try? container.decode([String: Double].self) {
-            self = .bilateral(left: bilateral["left"]!, right: bilateral["right"]!)
-        } else {
-            throw DecodingError.dataCorruptedError(
-                in: container,
-                debugDescription: "Invalid metric value"
-            )
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-
-        switch self {
-        case .single(let value):
-            try container.encode(value)
-
-        case .bilateral(let left, let right):
-            try container.encode(["left": left, "right": right])
-        }
-    }
-
-    func toPublic() -> AnalysisResult.MetricValue {
-        switch self {
-        case .single(let value):
-            .single(value)
-
-        case .bilateral(let left, let right):
-            .bilateral(left: left, right: right)
-        }
-    }
-}
 
 private enum CodableCalibrationStatus: Codable {
     case recording
