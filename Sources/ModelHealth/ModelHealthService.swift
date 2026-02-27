@@ -573,7 +573,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - name: A descriptive name for this activity (e.g., "cmj-test")
-    ///   - session: The session this activity is  associated with
+    ///   - session: The session this activity is associated with
     /// - Throws: An error if recording cannot start (session not calibrated, camera issues, etc.)
     public func record(activityNamed name: String, in session: Session) async throws -> Activity {
         try await serviceProvider.record(activityNamed: name, in: session)
@@ -589,7 +589,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// ```
     ///
     /// - Parameter session: The session to stop recording in
-    /// - Throws: An error if the activity cannot be stopped (invalid sesison ID, already stopped, etc.)
+    /// - Throws: An error if the activity cannot be stopped (invalid session ID, already stopped, etc.)
     public func stopRecording(_ session: Session) async throws {
         try await serviceProvider.stopRecording(session)
     }

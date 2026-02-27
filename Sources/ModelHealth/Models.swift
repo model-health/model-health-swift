@@ -532,7 +532,7 @@ public enum AnalysisType: String, CaseIterable, Sendable {
     case changeOfDirection = "5-0-5 Test"
 
     /// Cutting Manoeuvre
-    case cut = "Cutting Manoeuvre"
+    case cut = "Cutting Maneuvre"
 }
 
 /// Represents the current processing state of an activity.
