@@ -45,22 +45,6 @@ extension Subject {
             throw FFIConversionError.nullPointer("Subject characteristics is null")
         }
 
-        guard let tagsJson = cSubject.subjectTagsJson else {
-            throw FFIConversionError.nullPointer("Subject tags JSON is null")
-        }
-
-        let tagsString = String(cString: tagsJson)
-        let subjectTags: [String] = {
-            guard
-                let data = tagsString.data(using: .utf8),
-                let decoded = try? JSONDecoder().decode([String].self, from: data)
-            else {
-                return []
-            }
-
-            return decoded
-        }()
-
         return Subject(
             id: Int(cSubject.id),
             name: String(cString: name),
@@ -70,8 +54,7 @@ extension Subject {
             birthYear: cSubject.birthYear == 0 ? nil : Int(cSubject.birthYear),
             gender: genderFromI32(cSubject.gender),
             sexAtBirth: sexFromI32(cSubject.sexAtBirth),
-            characteristics: String(cString: characteristics),
-            subjectTags: subjectTags
+            characteristics: String(cString: characteristics)
         )
     }
 }
@@ -166,18 +149,18 @@ extension ActivityTag {
     }
 }
 
-extension AnalysisTask {
-    internal static func from(cTask: CAnalysisTask) throws -> AnalysisTask {
+extension Analysis {
+    internal static func from(cTask: CAnalysis) throws -> Analysis {
         guard let taskId = cTask.taskId else {
             throw FFIConversionError.nullPointer("Analysis task ID is null")
         }
 
-        return AnalysisTask(taskId: String(cString: taskId))
+        return Analysis(id: String(cString: taskId))
     }
 }
 
-extension ActivityProcessingStatus {
-    internal static func from(statusCode: Int32, uploaded: Int32, total: Int32) -> ActivityProcessingStatus
+extension ActivityStatus {
+    internal static func from(statusCode: Int32, uploaded: Int32, total: Int32) -> ActivityStatus
     {
         switch statusCode {
         case 0:
@@ -198,8 +181,8 @@ extension ActivityProcessingStatus {
     }
 }
 
-extension AnalysisTaskStatus {
-    internal static func from(statusCode: Int32) throws -> AnalysisTaskStatus {
+extension AnalysisStatus {
+    internal static func from(statusCode: Int32) throws -> AnalysisStatus {
         switch statusCode {
         case 0:
             return .processing
@@ -380,7 +363,7 @@ extension AnalysisType {
     }
 }
 
-extension ResultDataType {
+extension MotionDataType {
     var cValue: Int32 {
         switch self {
         case .animation:
@@ -429,7 +412,7 @@ extension ResultDataType {
     }
 }
 
-extension AnalysisResultDataType {
+extension AnalysisDataType {
     var cValue: Int32 {
         switch self {
         case .metrics:

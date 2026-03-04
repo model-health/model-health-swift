@@ -2,7 +2,12 @@ import Foundation
 
 // MARK: - Session
 
-/// Create with ``ModelHealthService/createSession()`` before performing camera calibration.
+/// A parent container for a movement capture workflow.
+/// Sessions link related entities such as activities and subjects, and provide the context used by subsequent operations.
+///
+/// Create a session with ``ModelHealthService/createSession()`` before performing subsequent operations like camera calibration.
+///
+/// When connecting or re-connecting to a Session, use the ``qrcode`` URL to retrieve the QR code image for pairing cameras.
 ///
 /// ```swift
 /// let session = try await service.createSession()
@@ -21,14 +26,12 @@ public struct Session: Identifiable, Sendable {
 }
 
 extension Session: Equatable {
-    /// Support for SwiftUI ForEach and List
     public static func == (lhs: Session, rhs: Session) -> Bool {
         lhs.id == rhs.id
     }
 }
 
 extension Session: Hashable {
-    /// Support for SwiftUI ForEach and List
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
@@ -36,12 +39,7 @@ extension Session: Hashable {
 
 // MARK: - Subject
 
-/// An individual being monitored or assessed in the ModelHealth system.
-///
-/// ```swift
-/// let subjects = try await service.subjectList()
-/// let filtered = subjects.filter { $0.subjectTags.contains("high-risk") }
-/// ```
+/// An individual being monitored or assessed.
 public struct Subject: Identifiable, Sendable {
     public enum Gender: CaseIterable, Sendable {
         case woman
@@ -62,31 +60,27 @@ public struct Subject: Identifiable, Sendable {
     public let id: Int
     public let name: String
 
-    /// Weight in kilograms
+    /// Weight in kilograms.
     public let weight: Double?
 
-    /// Height in centimeters
+    /// Height in centimeters.
     public let height: Double?
 
-    /// Age in years
+    /// Age in years.
     public let age: Int?
 
-    /// Year of birth
+    /// Year of birth.
     public let birthYear: Int?
 
     public let gender: Gender
 
     public let sexAtBirth: Sex
 
-    /// Freeform text describing relevant characteristics or medical conditions
+    /// Freeform text describing relevant characteristics or medical conditions.
     public let characteristics: String
-
-    /// Tags for categorization and filtering
-    public let subjectTags: [String]
 }
 
 extension Subject: Hashable {
-    /// Support for SwiftUI ForEach and List
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
@@ -94,19 +88,14 @@ extension Subject: Hashable {
 
 /// Parameters for creating a new subject.
 ///
-/// All fields except `sexAtBirth`, `gender`, and `characteristics` are required.
+/// `name`, `weight` and `height` are required.
+/// All other fields are optional and default to `.noResponse` or empty/nil values.
 ///
 /// ```swift
 /// let params = SubjectParameters(
-///     name: "John Doe",
-///     weight: 75.0,        // kilograms
-///     height: 180.0,       // centimeters
-///     birthYear: 1990,
-///     gender: .man,
-///     sexAtBirth: .man,
-///     characteristics: "Regular training schedule",
-///     subjectTags: ["athlete", "unimpaired"],
-///     terms: true
+///     name: "John Smith",
+///     weight: 75.0,
+///     height: 180.0
 /// )
 ///
 /// let subject = try await service.createSubject(parameters: params)
@@ -114,47 +103,37 @@ extension Subject: Hashable {
 public struct SubjectParameters: Sendable {
     public let name: String
 
-    /// Weight in kilograms
+    /// Weight in kilograms.
     public let weight: Double
 
-    /// Height in centimeters
+    /// Height in centimeters.
     public let height: Double
 
-    /// Year of birth
-    public let birthYear: Int
+    /// Year of birth.
+    public let birthYear: Int?
 
     public let sexAtBirth: Subject.Sex
     public let gender: Subject.Gender
 
-    /// Freeform text describing relevant characteristics or medical conditions
+    /// Freeform text describing relevant characteristics or medical conditions.
     public let characteristics: String
-
-    /// Tags for categorization and filtering (must contain at least one tag)
-    public let subjectTags: [String]
-
-    /// Confirmation that informed consent has been obtained
-    public let terms: Bool
 
     public init(
         name: String,
         weight: Double,
         height: Double,
-        birthYear: Int,
-        subjectTags: [String],
+        birthYear: Int? = nil,
         sexAtBirth: Subject.Sex? = nil,
         gender: Subject.Gender? = nil,
-        characteristics: String = "",
-        terms: Bool = true
+        characteristics: String = ""
     ) {
         self.name = name
         self.weight = weight
         self.height = height
         self.birthYear = birthYear
-        self.subjectTags = subjectTags
         self.sexAtBirth = sexAtBirth ?? .noResponse
         self.gender = gender ?? .noResponse
         self.characteristics = characteristics
-        self.terms = terms
     }
 }
 
@@ -163,7 +142,7 @@ public struct SubjectParameters: Sendable {
 /// A recorded video file from an activity.
 ///
 /// Videos are automatically uploaded to the cloud during recording.
-/// Use `video` to download the full video or `videoThumb` for preview thumbnails.
+/// Use `video` as the URL for the full video.
 public struct Video: Sendable {
     public let id: String
     public let activity: String
@@ -171,10 +150,7 @@ public struct Video: Sendable {
     public let videoThumb: String?
 }
 
-/// Specifies the type of video to retrieve from an activity.
-///
-/// Videos in an activity can exist in different processing states. Use this enumeration to specify
-/// which version of the videos you want to download.
+/// The processing version of the video to retrieve from an activity.
 public enum VideoVersion: Sendable {
     /// The original, unprocessed video as captured or uploaded.
     ///
@@ -183,23 +159,26 @@ public enum VideoVersion: Sendable {
 
     /// Videos that have been synchronized.
     ///
-    /// Synced videos have undergone processing and may include temporal alignment,
+    /// Synced videos have undergone processing and may include temporal alignment
     /// or other transformations applied during analysis.
     case synced
 }
 
 // MARK: - Activity Management
 
-/// A movement recording session with associated videos and analysis results.
+/// A movement recording trial with associated videos and results.
 ///
-/// Trials track the complete lifecycle of a recording from capture through
-/// processing to final analysis.
+/// Activities represent individual recording trials and contain references to
+/// captured videos and results.
 ///
 /// ```swift
-/// let activities = try await service.activityList()
-/// let completed = activities.filter { $0.status == "completed" && !$0.trashed }
+/// let activities = try await service.activityList(for: session)
+/// for activity in activities {
+///     print("\(activity.name ?? activity.id): \(activity.status)")
+/// }
 /// ```
 public struct Activity: Sendable {
+    /// A processed result file associated with an activity.
     public struct Result: Sendable {
         public let id: Int
         public let activity: String
@@ -207,6 +186,7 @@ public struct Activity: Sendable {
         public let media: String?
     }
 
+    /// The processing status of an activity on the server.
     public enum Status: Sendable {
         case done
         case error
@@ -224,10 +204,8 @@ public struct Activity: Sendable {
 
 /// Sort order for activity lists.
 ///
-/// Specifies how activities should be ordered when retrieved from the API.
-///
 /// ```swift
-/// let activities = try await service.getActivities(
+/// let activities = try await service.activities(
 ///     forSubject: subjectId,
 ///     startIndex: 0,
 ///     count: 20,
@@ -235,45 +213,44 @@ public struct Activity: Sendable {
 /// )
 /// ```
 public enum ActivitySort: Sendable {
+    /// Sort by most recently updated.
     case updatedAt
 }
 
 /// A tag that can be applied to activities for categorization.
 ///
-/// Activity tags provide a way to organize and filter activities.
-/// Common tags might include activity types (e.g., "CMJ", "Squat"),
-/// conditions (e.g., "Baseline", "Post-Training"), or any custom categorization.
+/// Use tags to organize and filter activities by type or condition
+/// (e.g., `"cmj"`, `"squat"`, `"baseline"`).
 ///
 /// ```swift
-/// let tags = try await service.getActivityTags()
+/// let tags = try await service.activityTags()
 /// let cmjTag = tags.first { $0.value == "cmj" }
 /// print("CMJ activities: \(cmjTag?.label ?? "")")
 /// ```
 public struct ActivityTag: Sendable {
+    /// The API value used to identify the tag.
     public let value: String
+    /// The human-readable display label.
     public let label: String
 }
 
-/// Specifies the type of result data to retrieve from an activity, including the desired file format.
-///
-/// Trials can generate different types of output data during processing and analysis.
-/// Use this enumeration to specify which types of data you want to download and in which format.
+/// The type of motion result data to retrieve from a processed activity, including the desired file format.
 ///
 /// ```swift
 /// // Download animation data (JSON only)
-/// let animationData = await service.data(ofType: [.animation], for: activity)
+/// let animationData = await service.motionData(ofType: [.animation], for: activity)
 ///
 /// // Download kinematics in MOT format
-/// let motData = await service.data(ofType: [.kinematics(.mot)], for: activity)
+/// let motData = await service.motionData(ofType: [.kinematics(.mot)], for: activity)
 ///
-/// // Download kinematics in both formats
-/// let bothFormats = await service.data(ofType: [.kinematics(.mot), .kinematics(.csv)], for: activity)
+/// // Download kinematics in both MOT and CSV formats
+/// let bothFormats = await service.motionData(ofType: [.kinematics(.mot), .kinematics(.csv)], for: activity)
 /// ```
-public enum ResultDataType: Hashable, Sendable {
-    /// Animation data for interpreting movement analysis results. Always JSON format.
+public enum MotionDataType: Hashable, Sendable {
+    /// Animation data for visualizing movement analysis results. Always JSON format.
     case animation
 
-    /// Raw kinematics data including joint positions, angles, and velocities.
+    /// Kinematic data including joint angles and positions.
     ///
     /// (**Only available in dynamic activities**)
     case kinematics(KinematicsFormat)
@@ -281,86 +258,92 @@ public enum ResultDataType: Hashable, Sendable {
     /// Marker trajectory data.
     case markers(MarkersFormat)
 
-    /// OpenSim model. Always OSim format.
+    /// OpenSim model. Always OSIM format.
     ///
     /// (**Only available in neutral activities**)
     case model
 
     /// Available file formats for kinematics result data.
     public enum KinematicsFormat: Sendable {
-        /// OpenSim Motion (.mot) format
+        /// OpenSim motion (.mot) format.
         case mot
-        /// Comma-separated values (.csv) format
+        /// Comma-separated values (.csv) format.
         case csv
     }
 
-    /// Available file formats for marker result data.
+    /// Available file formats for markers result data.
     public enum MarkersFormat: Sendable {
-        /// TRC marker trajectory (.trc) format
+        /// TRC marker trajectory (.trc) format.
         case trc
-        /// Comma-separated values (.csv) format
+        /// Comma-separated values (.csv) format.
         case csv
     }
 }
 
-/// Result data downloaded from an activity.
+@available(*, deprecated, renamed: "MotionDataType")
+public enum ResultDataType: Hashable, Sendable {
+    case animation
+}
+
+/// Motion data downloaded from a processed activity.
 ///
-/// Each instance carries the ``resultDataType`` that was requested, which also
-/// implies the file format. Use ``resultDataType`` to determine how to parse ``data``.
+/// Each instance carries the ``type`` that was requested, which also
+/// implies the file format. Use ``type`` to determine how to parse ``data``.
 ///
 /// ```swift
-/// let results = await service.data(ofType: [.kinematics(.mot)], for: activity)
+/// let results = await service.motionData(ofType: [.kinematics(.mot)], for: activity)
 ///
 /// for result in results {
-///     // result.resultDataType identifies both the type and implicit file format
+///     // result.type identifies both the type and implicit file format
 ///     // Use result.data directly as a .mot file
 /// }
 /// ```
-public struct ResultData: Sendable {
+public struct MotionData: Sendable {
     /// The type of result data and its file format. Use this to determine how to parse the raw data.
+    public let type: MotionDataType
+
+    /// The raw file data. Parse according to the format implied by ``type``.
+    public let data: Data
+}
+
+@available(*, deprecated, renamed: "MotionData")
+public struct ResultData: Sendable {
     public let resultDataType: ResultDataType
-
-
-    /// The raw file data
-    ///
-    /// Parse this data according to the file format of the associated ``ResultDataType``. For JSON files, use `JSONDecoder`.
-    /// For CSV files, convert to a string with UTF-8 encoding, etc.
     public let data: Data
 }
 
 // MARK: - Analysis Result Data
 
-/// Type of analysis result data to download from a completed trial.
+/// The type of analysis result data to download from an activity with a completed analysis.
 ///
-/// After analysis completes, three result types are available. The file format
-/// is implicit in the type:
-/// - ``metrics`` — JSON containing computed biomechanical metrics
-/// - ``data`` — ZIP containing raw analysis data
-/// - ``report`` — PDF report
-public enum AnalysisResultDataType: Hashable, Sendable {
+/// ```swift
+/// let results = await service.analysisData(ofType: [.metrics, .report], for: activity)
+/// ```
+public enum AnalysisDataType: Hashable, Sendable {
     /// Computed biomechanical metrics. Always JSON format.
     case metrics
-    /// Raw analysis data. Always ZIP format.
+    /// Extended analysis data. Always ZIP format.
     case data
     /// Analysis report. Always PDF format.
     case report
 }
 
-/// Downloaded analysis result data from a completed trial.
+@available(*, deprecated, renamed: "AnalysisDataType")
+public enum AnalysisResultDataType: Hashable, Sendable {
+    case metrics
+}
+
+/// Analysis result data downloaded from an activity with a completed analysis.
 ///
-/// The file format is implicit in ``resultDataType``:
-/// - ``AnalysisResultDataType/metrics`` → JSON
-/// - ``AnalysisResultDataType/data`` → ZIP
-/// - ``AnalysisResultDataType/report`` → PDF
+/// Use ``type`` to determine how to parse ``data``.
 ///
 /// ```swift
-/// let results = await service.analysisResultData(ofType: [.metrics, .report, .data], for: activity)
+/// let results = await service.analysisData(ofType: [.metrics, .report, .data], for: activity)
 ///
 /// for result in results {
-///     switch result.resultDataType {
+///     switch result.type {
 ///     case .metrics:
-///         let decoder = JSONDecoder()
-///         // Decode metrics JSON from result.data
+///         // Decode result.data as JSON
 ///     case .report:
 ///         // Use result.data directly as a PDF
 ///     case .data:
@@ -368,13 +351,17 @@ public enum AnalysisResultDataType: Hashable, Sendable {
 ///     }
 /// }
 /// ```
-public struct AnalysisResultData: Sendable {
-    /// The type of analysis result, which implies the file format.
-    public let resultDataType: AnalysisResultDataType
+public struct AnalysisData: Sendable {
+    /// The type of analysis result. Use this to determine how to parse ``data``.
+    public let type: AnalysisDataType
 
-    /// The raw file data.
-    ///
-    /// Parse according to the format implied by ``resultDataType``.
+    /// The raw file data. Parse according to the format implied by ``type``.
+    public let data: Data
+}
+
+@available(*, deprecated, renamed: "AnalysisData")
+public struct AnalysisResultData: Sendable {
+    public let resultDataType: AnalysisResultDataType
     public let data: Data
 }
 
@@ -388,15 +375,14 @@ public struct AnalysisResultData: Sendable {
 /// )
 /// ```
 public enum CheckerboardPlacement: String, CaseIterable, Identifiable, Sendable {
-    /// Checkerboard facing camera directly
+    /// Checkerboard upright (vertical), so its plane is perpendicular to the ground.
     case perpendicular
 
-    /// Checkerboard placed on the ground
+    /// Checkerboard flat on the floor, so its plane is parallel to the ground.
     case parallel
 }
 
 extension CheckerboardPlacement {
-    /// Support for SwiftUI ForEach and Picker
     public var id: String {
         self.rawValue
     }
@@ -406,9 +392,9 @@ extension CheckerboardPlacement {
 
 /// Configuration for a calibration checkerboard pattern.
 ///
-/// **Important:** Row and column counts refer to internal corners, not squares.
-/// For a standard 5×6 checkerboard, use `rows: 4, columns: 5`.
-/// Square size must be measured precisely in millimeters for accurate calibration.
+/// > Note: Row and column counts refer to internal corners, not squares.
+/// > For a standard 5×6 checkerboard, use `rows: 4, columns: 5`.
+/// > Square size must be measured precisely in millimeters for accurate calibration.
 ///
 /// ```swift
 /// let details = CheckerboardDetails(
@@ -420,16 +406,16 @@ extension CheckerboardPlacement {
 /// try await service.calibrateCamera(session, checkerboardDetails: details)
 /// ```
 public struct CheckerboardDetails: Sendable {
-    /// Number of internal corners (rows). For 5×6 squares, use 4
+    /// Number of internal corner rows. For a 5×6 checkerboard, use `4`.
     public let rows: Int
 
-    /// Number of internal corners (columns). For 5x6 squares, use 5
+    /// Number of internal corner columns. For a 5×6 checkerboard, use `5`.
     public let columns: Int
 
-    /// Size of each square in millimeters (must be precise)
+    /// Size of each square in millimeters. Must be measured precisely.
     public let squareSize: Int
 
-    /// Checkerboard orientation
+    /// Checkerboard orientation relative to the ground.
     public let placement: CheckerboardPlacement
 
     public init(rows: Int, columns: Int, squareSize: Int, placement: CheckerboardPlacement) {
@@ -440,47 +426,37 @@ public struct CheckerboardDetails: Sendable {
     }
 }
 
-/// Represents the current status of a calibration process.
+/// The current status of a calibration process.
 ///
-/// This enum tracks the progression of either camera calibration or neutral pose calibration,
-/// providing real-time feedback on the recording, upload, and processing stages.
+/// Reported during both camera calibration and subject calibration,
+/// tracking the recording, uploading and processing stages.
 ///
-/// ## Usage
 /// ```swift
-/// try await service.calibrateNeutralPose(
-///     for: subject,
+/// try await service.calibrateSubject(
+///     subject,
 ///     in: session
 /// ) { status in
 ///     switch status {
 ///     case .recording:
 ///         print("Recording...")
-///
 ///     case .uploading(let uploaded, let total):
 ///         print("Uploading: \(uploaded)/\(total)")
-///
 ///     case .processing(let percent):
 ///         print("Processing: \(percent ?? 0)%")
-///
-///     case .done(let images):
-///         print("Complete! \(images.count) videos processed")
+///     case .done:
+///         print("Complete!")
 ///     }
 /// }
 /// ```
 public enum CalibrationStatus: Sendable {
-    /// The recording phase is in progress.
-    ///
-    /// During this phase, all connected cameras are actively recording.
-    /// If calibrating the neutral pose the subject should remain still and hold their pose until this phase completes.
+    /// All connected cameras are actively recording.
     case recording
 
-    /// Recordings have been stopped and videos are being uploaded from cameras.
+    /// Videos are being uploaded from cameras.
     ///
     /// - Parameters:
     ///   - uploaded: The number of videos successfully uploaded so far.
     ///   - total: The total number of videos expected from all cameras.
-    ///
-    /// Use this status to display upload progress to users. The subject can relax
-    /// during this phase as recording has completed.
     case uploading(uploaded: Int, total: Int)
 
     /// The server is processing the uploaded videos.
@@ -493,69 +469,90 @@ public enum CalibrationStatus: Sendable {
     case done
 }
 
-/// Represents available analysis functions for motion capture data.
+/// Available analysis types for motion capture activities.
 ///
-/// Each analysis type processes activity data to extract specific biomechanical metrics
-/// and insights. Analysis can only be performed on activities that have completed processing.
+/// Analysis can only be performed on activities that have reached `.ready` status.
 public enum AnalysisType: String, CaseIterable, Sendable {
-    /// Counter Movement Jump
+    /// Counter Movement Jump.
     case counterMovementJump = "Counter Movement Jump"
 
-    /// Overground Walking
+    /// Overground Walking.
     case gait = "Overground Walking"
 
-    /// Treadmill Running
+    /// Treadmill Running.
     case treadmillRunning = "Treadmill Running"
 
-    /// Sit-to-Stand Transfer
+    /// Sit-to-Stand Transfer.
     case sitToStand = "Sit-to-Stand Transfer"
 
-    /// Squat Exercise
+    /// Squat Exercise.
     case squats = "Squats"
 
-    /// Range of Motion (ROM)
+    /// Range of Motion (ROM).
     case rangeOfMotion = "Range of Motion"
 
-    /// Overground Running
+    /// Overground Running.
     case overgroundRunning = "Overground Running"
 
-    /// Drop Vertical Jump
+    /// Drop Vertical Jump.
     case dropJump = "Drop Vertical Jump"
 
-    /// Hop Test
+    /// Hop Test.
     case hop = "Hop Test"
 
-    /// Treadmill Walking
+    /// Treadmill Walking.
     case treadmillGait = "Treadmill Walking"
 
-    /// 5-0-5 Test
+    /// 5-0-5 Test.
     case changeOfDirection = "5-0-5 Test"
 
-    /// Cutting Manoeuvre
-    case cut = "Cutting Maneuvre"
+    /// Cutting Maneuver.
+    case cut = "Cutting Maneuver"
 }
 
-/// Represents the current processing state of an activity.
+/// The current processing state of an activity.
 ///
-/// Trials must reach the `ready` state before analysis can be performed.
-public enum ActivityProcessingStatus: Sendable {
+/// Activities must reach `.ready` before analysis can begin.
+public enum ActivityStatus: Sendable {
+    /// Videos are being uploaded. `uploaded` and `total` track progress.
     case uploading(uploaded: Int, total: Int)
+    /// Videos have been uploaded and are being processed.
     case processing
+    /// Processing is complete. The activity is ready for analysis.
     case ready
+    /// Processing failed.
     case failed
 }
 
-/// Represents an active analysis task.
+@available(*, deprecated, renamed: "ActivityStatus")
+public enum ActivityProcessingStatus: Sendable {
+    case failed
+}
+
+/// An active analysis returned by ``ModelHealthService/startAnalysis(_:for:in:)``.
 ///
-/// Use the `taskId` to poll for analysis completion status.
+/// Pass to ``ModelHealthService/analysisStatus(for:)`` to poll for completion.
+public struct Analysis: Sendable, Identifiable {
+    public let id: String
+}
+
+@available(*, deprecated, renamed: "Analysis")
 public struct AnalysisTask: Sendable {
     public let taskId: String
 }
 
-/// Represents the current state of an analysis task.
-public enum AnalysisTaskStatus: Sendable {
+/// The current state of an analysis.
+public enum AnalysisStatus: Sendable {
+    /// Analysis is in progress.
     case processing
+    /// Analysis completed successfully.
     case completed
+    /// Analysis failed.
+    case failed
+}
+
+@available(*, deprecated, renamed: "AnalysisStatus")
+public enum AnalysisTaskStatus: Sendable {
     case failed
 }
 
@@ -616,7 +613,6 @@ extension Subject {
         public var gender: Subject.Gender = .man
         public var sexAtBirth: Subject.Sex = .man
         public var characteristics = ""
-        public var subjectTags: [String] = []
 
         func build() -> Subject {
             Subject(
@@ -628,8 +624,7 @@ extension Subject {
                 birthYear: birthYear,
                 gender: gender,
                 sexAtBirth: sexAtBirth,
-                characteristics: characteristics,
-                subjectTags: subjectTags
+                characteristics: characteristics
             )
         }
     }
@@ -750,30 +745,27 @@ extension ActivityTag {
     }
 }
 
-extension ResultData {
+extension MotionData {
     public static func forPreview(
-        resultDataType: ResultDataType,
+        resultDataType: MotionDataType,
         customizing: (inout PreviewBuilder) -> Void = { _ in }
     ) -> Self {
-        var builder = PreviewBuilder(resultDataType: resultDataType)
+        var builder = PreviewBuilder(type: resultDataType)
         customizing(&builder)
         return builder.build()
     }
 
     public struct PreviewBuilder {
-        public let resultDataType: ResultDataType
+        public let type: MotionDataType
         public let data: Data = Data("time,position,velocity\n0.0,0.0,0.0\n1.0,1.0,1.0".utf8)
 
-        func build() -> ResultData {
-            ResultData(
-                resultDataType: resultDataType,
-                data: data
-            )
+        func build() -> MotionData {
+            MotionData(type: type, data: data)
         }
     }
 }
 
-extension AnalysisTask {
+extension Analysis {
     public static func forPreview(
         customizing: (inout PreviewBuilder) -> Void = { _ in }
     ) -> Self {
@@ -785,13 +777,13 @@ extension AnalysisTask {
     public struct PreviewBuilder {
         public var taskId = "preview-analysis-task"
 
-        func build() -> AnalysisTask {
-            AnalysisTask(taskId: taskId)
+        func build() -> Analysis {
+            Analysis(id: taskId)
         }
     }
 }
 
-extension AnalysisResultData {
+extension AnalysisData {
     public static func forPreview(
         customizing: (inout PreviewBuilder) -> Void = { _ in }
     ) -> Self {
@@ -801,7 +793,7 @@ extension AnalysisResultData {
     }
 
     public struct PreviewBuilder {
-        public let resultDataType: AnalysisResultDataType = .metrics
+        public let resultDataType: AnalysisDataType = .metrics
         public let data: Data = Data(
             """
             {
@@ -833,9 +825,9 @@ extension AnalysisResultData {
             """.utf8
         )
 
-        func build() -> AnalysisResultData {
-            AnalysisResultData(
-                resultDataType: resultDataType,
+        func build() -> AnalysisData {
+            AnalysisData(
+                type: resultDataType,
                 data: data
             )
         }

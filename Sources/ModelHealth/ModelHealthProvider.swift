@@ -113,7 +113,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func getActivities(
+    func activities(
         forSubject subjectId: String,
         startIndex: Int,
         count: Int,
@@ -158,7 +158,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func get(activity activityId: String) async throws -> Activity {
+    func fetch(activity activityId: String) async throws -> Activity {
         try await withCheckedThrowingContinuation { continuation in
             var cTrial = CTrial(
                 id: nil,
@@ -170,7 +170,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             )
 
             let result = activityId.withCString { activityIdPtr in
-                model_health_get_activity(handle, activityIdPtr, &cTrial)
+                model_health_fetch_activity(handle, activityIdPtr, &cTrial)
             }
 
             if result.success {
@@ -234,7 +234,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func getActivityTags() async throws -> [ActivityTag] {
+    func activityTags() async throws -> [ActivityTag] {
         try await withCheckedThrowingContinuation { continuation in
             var cArray = CActivityTagArray(tags: nil, count: 0)
             let result = model_health_activity_tags(handle, &cArray)
@@ -301,7 +301,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func data(ofType types: Set<ResultDataType>, for trial: Activity) async -> [ResultData] {
+    func motionData(ofType types: Set<MotionDataType>, for trial: Activity) async -> [MotionData] {
         await withCheckedContinuation { continuation in
             let typeCodes: [Int32] = types.map(\.cValue)
 
@@ -339,27 +339,27 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 return
             }
 
-            let results: [ResultData] = (0..<cArray.count).compactMap { i in
+            let results: [MotionData] = (0..<cArray.count).compactMap { i in
                 let item = itemsPtr[i]
                 guard
-                    let dataType = ResultDataType(cValue: item.dataType),
+                    let dataType = MotionDataType(cValue: item.dataType),
                     let dataPtr = item.data,
                     item.length > 0
                 else {
                     return nil
                 }
 
-                return ResultData(resultDataType: dataType, data: Data(bytes: dataPtr, count: item.length))
+                return MotionData(type: dataType, data: Data(bytes: dataPtr, count: item.length))
             }
 
             continuation.resume(returning: results)
         }
     }
 
-    func analysisResultData(
-        ofType types: Set<AnalysisResultDataType>,
+    func analysisData(
+        ofType types: Set<AnalysisDataType>,
         for trial: Activity
-    ) async -> [AnalysisResultData] {
+    ) async -> [AnalysisData] {
         await withCheckedContinuation { continuation in
             let typeCodes: [Int32] = types.map(\.cValue)
 
@@ -397,17 +397,17 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 return
             }
 
-            let results: [AnalysisResultData] = (0..<cArray.count).compactMap { i in
+            let results: [AnalysisData] = (0..<cArray.count).compactMap { i in
                 let item = itemsPtr[i]
                 guard
-                    let dataType = AnalysisResultDataType(cValue: item.dataType),
+                    let dataType = AnalysisDataType(cValue: item.dataType),
                     let dataPtr = item.data,
                     item.length > 0
                 else {
                     return nil
                 }
 
-                return AnalysisResultData(resultDataType: dataType, data: Data(bytes: dataPtr, count: item.length))
+                return AnalysisData(type: dataType, data: Data(bytes: dataPtr, count: item.length))
             }
 
             continuation.resume(returning: results)
@@ -447,7 +447,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             var cSubject = CSubject(
                 id: 0, name: nil, weight: 0, height: 0,
                 age: 0, birthYear: 0, gender: 0, sexAtBirth: 0,
-                characteristics: nil, subjectTagsJson: nil
+                characteristics: nil
             )
 
             let result = parameters.name.withCString { name in
@@ -456,10 +456,9 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     name,
                     parameters.weight,
                     parameters.height,
-                    Int32(parameters.birthYear),
+                    parameters.birthYear.map(Int32.init) ?? -1,
                     parameters.sexAtBirth.cValue,
                     parameters.gender.cValue,
-                    parameters.terms,
                     &cSubject
                 )
             }
@@ -483,7 +482,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     // MARK: - Recording Operations
 
-    func record(activityNamed name: String, in session: Session) async throws -> Activity {
+    func startRecording(activityNamed name: String, in session: Session) async throws -> Activity {
         try await withCheckedThrowingContinuation { continuation in
             var cTrial = CTrial(
                 id: nil, session: nil, name: nil, status: nil,
@@ -493,7 +492,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             let result = name.withCString { trialName in
                 session.id.withCString { sessionId in
-                    model_health_record(handle, trialName, sessionId, &cTrial)
+                    model_health_start_recording(handle, trialName, sessionId, &cTrial)
                 }
             }
 
@@ -575,8 +574,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func calibrateNeutralPose(
-        for subject: Subject,
+    func calibrateSubject(
+        _ subject: Subject,
         in session: Session,
         statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
     ) async throws {
@@ -588,7 +587,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             let contextPtr = Unmanaged.passRetained(context).toOpaque()
 
             let result = session.id.withCString { sessionId in
-                model_health_calibrate_neutral_pose(
+                model_health_calibrate_subject(
                     handle,
                     sessionId,
                     Int32(subject.id),
@@ -622,7 +621,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     // MARK: - Analysis Operations
 
-    func getStatus(forActivity activity: Activity) async throws -> ActivityProcessingStatus {
+    func activityStatus(for activity: Activity) async throws -> ActivityStatus {
         try await withCheckedThrowingContinuation { continuation in
             var statusCode: Int32 = -1
             var uploaded: Int32 = 0
@@ -630,7 +629,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             let result = activity.id.withCString { trialId in
                 activity.session.withCString { sessionId in
-                    model_health_get_trial_status(
+                    model_health_activity_status(
                         handle,
                         trialId,
                         sessionId,
@@ -642,7 +641,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             }
 
             if result.success {
-                let status = ActivityProcessingStatus.from(
+                let status = ActivityStatus.from(
                     statusCode: statusCode,
                     uploaded: uploaded,
                     total: total
@@ -658,7 +657,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         _ analysisType: AnalysisType,
         for trial: Activity,
         in session: Session
-    ) async throws -> AnalysisTask {
+    ) async throws -> Analysis {
         try await withCheckedThrowingContinuation { continuation in
             guard let trialName = trial.name else {
                 continuation.resume(
@@ -667,7 +666,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 return
             }
 
-            var cTask = CAnalysisTask(taskId: nil)
+            var cTask = CAnalysis(taskId: nil)
 
             let result = trial.id.withCString { trialId in
                 session.id.withCString { sessionId in
@@ -684,7 +683,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let task = try AnalysisTask.from(cTask: cTask)
+                    let task = try Analysis.from(cTask: cTask)
                     if let taskId = cTask.taskId {
                         model_health_free_string(taskId)
                     }
@@ -703,17 +702,17 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func getAnalysisStatus(for task: AnalysisTask) async throws -> AnalysisTaskStatus {
+    func analysisStatus(for task: Analysis) async throws -> AnalysisStatus {
         try await withCheckedThrowingContinuation { continuation in
             var statusCode: Int32 = -1
 
-            let result = task.taskId.withCString { taskId in
-                model_health_get_analysis_status(handle, taskId, &statusCode)
+            let result = task.id.withCString { taskId in
+                model_health_analysis_status(handle, taskId, &statusCode)
             }
 
             if result.success {
                 do {
-                    let status = try AnalysisTaskStatus.from(statusCode: statusCode)
+                    let status = try AnalysisStatus.from(statusCode: statusCode)
                     continuation.resume(returning: status)
                 } catch {
                     continuation.resume(
@@ -764,7 +763,6 @@ private extension ModelHealthProviderImpl {
     func freeSubjectFields(_ subject: CSubject) {
         subject.name.map { model_health_free_string($0) }
         subject.characteristics.map { model_health_free_string($0) }
-        subject.subjectTagsJson.map { model_health_free_string($0) }
     }
 
     func freeTrialFields(_ trial: CTrial) {

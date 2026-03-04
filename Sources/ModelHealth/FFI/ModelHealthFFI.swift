@@ -54,7 +54,6 @@ struct CSubject {
     let gender: Int32  // 0=Man, 1=Woman, 2=Transgender, 3=NonBinary, 4=NoResponse
     let sexAtBirth: Int32  // 0=Man, 1=Woman, 2=Intersex, 3=NotListed, 4=NoResponse
     let characteristics: UnsafeMutablePointer<CChar>?
-    let subjectTagsJson: UnsafeMutablePointer<CChar>?
 }
 
 struct CSubjectArray {
@@ -86,7 +85,7 @@ struct CTrialArray {
     let count: Int
 }
 
-struct CAnalysisTask {
+struct CAnalysis {
     let taskId: UnsafeMutablePointer<CChar>?
 }
 
@@ -124,7 +123,7 @@ struct CDataArray {
     let count: Int
 }
 
-/// `dataType` discriminant matches `ResultDataTypeWire`:
+/// `dataType` discriminant matches `MotionDataTypeWire`:
 ///   0 = Animation, 1 = KinematicsMot, 2 = KinematicsCsv
 ///   3 = MarkersTrc, 4 = MarkersCsv, 5 = Model
 struct CResultData {
@@ -138,7 +137,7 @@ struct CResultDataArray {
     let count: Int
 }
 
-/// `dataType` discriminant matches `AnalysisResultDataType`:
+/// `dataType` discriminant matches `AnalysisDataType`:
 ///   0 = Metrics (JSON), 1 = Data (CSV), 2 = Report (PDF)
 typealias CAnalysisResultDataArray = CResultDataArray
 
@@ -157,7 +156,7 @@ func model_health_free_activity_tag_array(_ array: CActivityTagArray)
 func model_health_free_trial_array(_ array: CTrialArray)
 
 @_silgen_name("model_health_free_analysis_task")
-func model_health_free_analysis_task(_ task: CAnalysisTask)
+func model_health_free_analysis_task(_ task: CAnalysis)
 
 @_silgen_name("model_health_free_video_array")
 func model_health_free_video_array(_ array: CVideoArray)
@@ -180,13 +179,6 @@ func model_health_free_analysis_result_data_array(_ array: CAnalysisResultDataAr
 func model_health_session_list(
     _ handle: ModelHealthProviderHandle,
     _ result: UnsafeMutablePointer<CSessionArray>
-) -> FFIResult
-
-@_silgen_name("model_health_get_session")
-func model_health_get_session(
-    _ handle: ModelHealthProviderHandle,
-    _ sessionId: UnsafePointer<CChar>,
-    _ result: UnsafeMutablePointer<CSession>
 ) -> FFIResult
 
 @_silgen_name("model_health_subject_list")
@@ -212,8 +204,8 @@ func model_health_activities_for_subject(
     _ result: UnsafeMutablePointer<CTrialArray>
 ) -> FFIResult
 
-@_silgen_name("model_health_get_activity")
-func model_health_get_activity(
+@_silgen_name("model_health_fetch_activity")
+func model_health_fetch_activity(
     _ handle: ModelHealthProviderHandle,
     _ activityId: UnsafePointer<CChar>,
     _ result: UnsafeMutablePointer<CTrial>
@@ -261,17 +253,16 @@ func model_health_create_subject(
     _ name: UnsafePointer<CChar>,
     _ weight: Double,
     _ height: Double,
-    _ birthYear: Int32,
+    _ birthYear: Int32,   // pass -1 if not provided
     _ sexAtBirth: Int32,
     _ gender: Int32,
-    _ terms: Bool,
     _ result: UnsafeMutablePointer<CSubject>
 ) -> FFIResult
 
 // MARK: - Recording Operations
 
-@_silgen_name("model_health_record")
-func model_health_record(
+@_silgen_name("model_health_start_recording")
+func model_health_start_recording(
     _ handle: ModelHealthProviderHandle,
     _ trialName: UnsafePointer<CChar>,
     _ sessionId: UnsafePointer<CChar>,
@@ -302,8 +293,8 @@ func model_health_calibrate_camera(
     _ userData: UnsafeMutableRawPointer?
 ) -> FFIResult
 
-@_silgen_name("model_health_calibrate_neutral_pose")
-func model_health_calibrate_neutral_pose(
+@_silgen_name("model_health_calibrate_subject")
+func model_health_calibrate_subject(
     _ handle: ModelHealthProviderHandle,
     _ sessionId: UnsafePointer<CChar>,
     _ subjectId: Int32,
@@ -320,18 +311,18 @@ func model_health_start_analysis(
     _ trialId: UnsafePointer<CChar>,
     _ trialName: UnsafePointer<CChar>,
     _ sessionId: UnsafePointer<CChar>,
-    _ result: UnsafeMutablePointer<CAnalysisTask>
+    _ result: UnsafeMutablePointer<CAnalysis>
 ) -> FFIResult
 
-@_silgen_name("model_health_get_analysis_status")
-func model_health_get_analysis_status(
+@_silgen_name("model_health_analysis_status")
+func model_health_analysis_status(
     _ handle: ModelHealthProviderHandle,
     _ taskId: UnsafePointer<CChar>,
     _ status: UnsafeMutablePointer<Int32>
 ) -> FFIResult
 
-@_silgen_name("model_health_get_trial_status")
-func model_health_get_trial_status(
+@_silgen_name("model_health_activity_status")
+func model_health_activity_status(
     _ handle: ModelHealthProviderHandle,
     _ trialId: UnsafePointer<CChar>,
     _ sessionId: UnsafePointer<CChar>,

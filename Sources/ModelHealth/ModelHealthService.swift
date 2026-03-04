@@ -1,45 +1,52 @@
 import Foundation
 
-/// The primary interface for ModelHealth's movement analysis platform.
+/// The primary interface for Model Health's movement analysis platform.
 ///
 /// ModelHealthService enables you to measure and analyze human movement from smartphone
 /// videos. It provides a complete workflow for:
 /// - Authentication and session management
-/// - Multi-camera calibration
+/// - Subject profile management
+/// - Camera and subject calibration
 /// - Movement data collection
-/// - Analysis and reporting
+/// - Analysis and result retrieval
 ///
 /// ## Overview
 ///
 /// The SDK follows a structured workflow:
 ///
 /// 1. **Initialization**: Create a service with your API key
-/// 2. **Session Creation**: Create a calibration session
+/// 2. **Session Creation**: Create a session
 /// 3. **Camera Calibration**: Calibrate cameras using a checkerboard pattern
-/// 4. **Neutral Pose**: Capture subject's neutral standing pose for scaling
-/// 5. **Recording**: Record movement activities (squats, jumps, etc.)
-/// 6. **Analysis**: Fetch processed biomechanical data
+/// 4. **Subject Creation**: Create a subject profile with anthropometric measurements
+/// 5. **Subject Calibration**: Calibrate subject using videos of a neutral pose
+/// 6. **Movement Recording**: Record movement activities (squats, jumps, etc.)
+/// 7. **Movement Analysis**: Trigger advanced analysis and fetch processed biomechanical data
 ///
 /// ## Usage Example
 ///
 /// ```swift
 /// let service = try ModelHealthService(apiKey: "your-api-key")
 ///
-/// // Create session and calibrate
+/// // Create session
 /// let session = try await service.createSession()
+///
+/// // Calibrate cameras
 /// let details = CheckerboardDetails(rows: 4, columns: 5, squareSize: 35, placement: .perpendicular)
 /// try await service.calibrateCamera(session, checkerboardDetails: details) { status in }
 ///
-/// // Capture neutral pose
-/// try await service.calibrateNeutralPose(for: subject, in: session) { status in }
+/// // Create subject and calibrate
+/// let params = SubjectParameters(name: "Jane Doe", weight: 65, height: 170, birthYear: 1990, gender: .woman, sexAtBirth: .woman)
+/// let subject = try await service.createSubject(parameters: params)
+/// try await service.calibrateSubject(subject, in: session) { status in }
 ///
 /// // Record a movement activity
-/// let activity = try await service.record(activityNamed: "cmj-1", in: session)
+/// let activity = try await service.startRecording(activityNamed: "cmj", in: session)
 /// // Subject performs movement...
 /// try await service.stopRecording(session)
 ///
-/// // Poll for processing completion, then analyze
-/// let status = try await service.getStatus(forActivity: activity)
+/// // Check if activity is ready for analysis (poll until .ready)
+/// let status = try await service.activityStatus(for: activity)
+/// // Run advanced biomechanical analysis when ready
 /// if case .ready = status {
 ///     let task = try await service.startAnalysis(.counterMovementJump, for: activity, in: session)
 ///     // Poll for analysis completion...
@@ -55,41 +62,46 @@ import Foundation
 /// ### Session & Calibration
 /// - ``createSession()``
 /// - ``calibrateCamera(_:checkerboardDetails:statusUpdate:)``
-/// - ``calibrateNeutralPose(for:in:statusUpdate:)``
+/// - ``calibrateSubject(_:in:statusUpdate:)``
 ///
 /// ### Recording & Analysis
-/// - ``record(activityNamed:in:)``
+/// - ``startRecording(activityNamed:in:)``
 /// - ``stopRecording(_:)``
-/// - ``getStatus(forActivity:)``
+/// - ``activityStatus(for:)``
 /// - ``startAnalysis(_:for:in:)``
-/// - ``getAnalysisStatus(for:)``
-/// - ``analysisResultData(ofType:for:)``
+/// - ``analysisStatus(for:)``
+/// - ``analysisData(ofType:for:)``
 public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     private let serviceProvider: ModelHealthProvider
 
     /// Creates a new ModelHealth SDK instance with an API key.
     ///
-    /// The SDK requires an API key for authentication. This key should be obtained
-    /// from https://docs.modelhealth.io/register.
+    /// The SDK requires an API key for authentication. Contact support@modelhealth.io
+    /// to obtain one.
     ///
     /// ```swift
     /// let service = try ModelHealthService(apiKey: "your-api-key-here")
-    /// // SDK is ready to use
-    /// let sessions = try await service.sessionList()
+    /// let session = try await service.createSession()
     /// ```
     ///
-    /// - Parameter apiKey: Your Model Health API key
-    /// - Throws: An error if initialization fails
+    /// - Parameter apiKey: Your ModelHealth API key, available in the dashboard at modelhealth.io
+    /// - Throws: A ``ModelHealthError`` if the API key is empty or invalid
     public init(apiKey: String) throws {
         self.serviceProvider = try ModelHealthProviderImpl(apiKey: apiKey)
     }
 
     /// Creates a ModelHealth SDK instance with a custom service provider.
     ///
-    /// This initializer can be used for testing with your own mocked Model Health service provider that
-    /// conforms to `ModelHealthProvider`
+    /// Use this initializer to inject a custom ``ModelHealthProvider`` implementation — typically
+    /// a mock for unit testing or an alternative provider for staging environments.
     ///
-    /// - Parameter serviceProvider: The provider that handles SDK operations
+    /// ```swift
+    /// let mock = MockModelHealthProvider()
+    /// let service = ModelHealthService(serviceProvider: mock)
+    /// ```
+    ///
+    /// - Parameter serviceProvider: A custom implementation of ``ModelHealthProvider``,
+    ///   typically a mock for unit testing or a custom provider for staging environments.
     public init(serviceProvider: ModelHealthProvider) {
         self.serviceProvider = serviceProvider
     }
@@ -98,146 +110,125 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
 
     /// Retrieves all sessions for the account associated with the API key.
     ///
-    /// - Returns: An array of ``Session`` objects. Returns an empty array if no sessions exist.
-    /// - Throws: An error if the request fails due to network issues, authentication problems,
-    ///   or server errors.
+    /// Use this to list existing sessions before creating a new one, or to resume a previous
+    /// capture workflow.
     ///
-    /// ## Example
+    /// To connect to a device to a specific session, use the session's ``Session/qrcode`` to download
+    /// the QR code image data, then display it on your app to be captured by the ModelHealth mobile app.
+    ///
     /// ```swift
-    /// do {
-    ///     let sessions = try await client.sessionList()
-    ///     print("Found \(sessions.count) sessions")
-    ///     for session in sessions {
-    ///         print("Session: \(session.id)")
-    ///     }
-    /// } catch {
-    ///     print("Failed to fetch sessions: \(error)")
+    /// let sessions = try await service.sessionList()
+    /// print("Found \(sessions.count) sessions")
+    ///
+    /// // Download and display QR code for the first session
+    /// guard
+    ///     let firstSession = sessions.first,
+    ///     let qrCode = firstSession.qrcode,
+    ///     let url = URL(string: qrCode)
+    /// else {
+    ///     // handle failure
     /// }
     /// ```
+    ///
+    /// - Returns: An array of ``Session`` objects, or an empty array if none exist.
+    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func sessionList() async throws -> [Session] {
         try await serviceProvider.sessionList()
     }
 
-    /// Retrieves all movement activities associated with the account.
+    /// Retrieves all movement activities associated with a session.
     ///
-    /// Activities represent individual recording sessions and contain references to
-    /// captured videos and analysis results. Use this to review past data or
-    /// fetch analysis for completed activities.
+    /// Activities represent individual recording trials and contain references to
+    /// captured videos and results. Use this to review past data or
+    /// fetch results for completed activities.
     ///
     /// ```swift
     /// let activities = try await service.activityList(for: session)
     ///
-    /// // Find completed activities ready for analysis
-    /// let completed = activities.filter { $0.status == "completed" }
-    ///
-    /// // Access videos and results
-    /// for activity in completed {
+    /// for activity in activities {
     ///     print("Activity: \(activity.name ?? activity.id)")
     ///     print("Videos: \(activity.videos.count)")
     ///     print("Results: \(activity.results.count)")
     /// }
     /// ```
     ///
-    /// - Returns: An array of ``Activity`` objects
-    /// - Parameters: session The session to retrieve activities for
-    /// - Throws: An error if the request fails or authentication has expired
+    /// - Parameter session: The session to retrieve activities for.
+    /// - Returns: An array of ``Activity`` objects, or an empty array if none exist.
+    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func activityList(for session: Session) async throws -> [Activity] {
         try await serviceProvider.activityList(for: session)
     }
 
-    /// Download video data for a specific activity.
+    /// Downloads video data for a specific activity.
     ///
-    /// Asynchronously fetches all videos associated with a given activity that match the specified type.
-    /// Videos with invalid URLs or failed downloads are silently excluded from the result.
+    /// Fetches all videos associated with the activity that match the specified version.
+    /// Downloads run concurrently. Videos with invalid URLs or failed downloads are silently
+    /// excluded from the result.
     ///
-    /// - Parameters:
-    ///   - activity: The activity whose videos should be downloaded.
-    ///   - version: The version type of videos to download (e.g., raw, processed).
-    ///
-    /// - Returns: An array of `Data` objects containing the downloaded video data. The array may be
-    ///            empty if no valid videos are available or all downloads fail.
-    ///
-    /// - Note: This method performs concurrent downloads for optimal performance. Individual download
-    ///         failures do not affect other requests.
-    ///
-    /// ## Example
     /// ```swift
-    /// let activity = // ... obtained activity
     /// let videoData = await service.videos(for: activity, version: .raw)
-    ///
     /// for data in videoData {
     ///     // Process video data
     /// }
     /// ```
+    ///
+    /// - Parameters:
+    ///   - activity: The activity whose videos should be downloaded.
+    ///   - version: The version of videos to download (e.g., `.raw`, `.synced`).
+    /// - Returns: An array of `Data` objects. May be empty if no videos are available or all
+    ///   downloads fail.
     public func videos(for activity: Activity, version: VideoVersion) async -> [Data] {
         await serviceProvider.videos(for: activity, version: version)
     }
 
-    /// Downloads result data files from a processed activity.
+    /// Downloads motion data from a processed activity.
     ///
-    /// After an activity completes processing, various result files become available for download.
-    /// Use this method to retrieve specific types of data (kinematic measurements, visualizations)
-    /// in their native file formats (JSON, CSV).
+    /// Use this after an activity reaches `.ready` status to retrieve biomechanical result files
+    /// such as kinematics, marker data, or an OpenSim model. Downloads run concurrently and
+    /// failed downloads are silently excluded from results.
     ///
-    /// This method is useful when you need access to non-analytical data rather than the
-    /// structured analysis provided by ``analysisResultData(ofType:for:)``.
-    ///
-    /// - Parameters:
-    ///   - types: The types of result data to download (kinematic, visualization, or both)
-    ///   - activity: The completed activity to download data from
-    /// - Returns: An array of result data, one entry per requested type. Returns an empty array if no
-    ///   results are available or all downloads fail.
-    ///
-    /// ## Example
     /// ```swift
-    /// // Download kinematics in MOT format
-    /// let results = await service.data(ofType: [.kinematics(.mot)], for: activity)
+    /// let results = await service.motionData(ofType: [.kinematics(.mot), .animation], for: activity)
     ///
     /// for result in results {
     ///     switch result.resultDataType {
     ///     case .kinematics(.mot):
     ///         // Use result.data directly as a .mot file
-    ///         break
+    ///     case .animation:
+    ///         // Use result.data directly as an animation file
     ///     default:
     ///         break
     ///     }
     /// }
-    ///
-    /// // Download multiple types in one call
-    /// let allData = await service.data(
-    ///     ofType: [.kinematics(.mot), .animation],
-    ///     for: activity
-    /// )
-    /// print("Downloaded \(allData.count) result files")
     /// ```
     ///
-    /// - Note: This method performs concurrent downloads for optimal performance.
-    ///   Individual download failures do not affect other requests and failed downloads
-    ///   are silently excluded from results.
-    public func data(ofType types: Set<ResultDataType>, for activity: Activity) async -> [ResultData] {
-        await serviceProvider.data(ofType: types, for: activity)
+    /// - Parameters:
+    ///   - types: The result data types to download (e.g., `.kinematics(.mot)`, `.markers`, `.animation`).
+    ///   - activity: The activity to download data from. Must have completed processing.
+    /// - Returns: An array of ``MotionData``, one entry per successfully downloaded type. May be empty
+    ///   if no results are available or all downloads fail.
+    public func motionData(ofType types: Set<MotionDataType>, for activity: Activity) async -> [MotionData] {
+        await serviceProvider.motionData(ofType: types, for: activity)
     }
 
-    /// Downloads analysis result data for a completed activity.
+    @available(*, deprecated, renamed: "motionData(ofType:for:)")
+    public func data(ofType types: Set<ResultDataType>, for activity: Activity) async -> [ResultData] {
+        []
+    }
+
+    /// Downloads result data for an activity with a completed analysis.
     ///
-    /// Retrieves the requested result types from an activity that has completed analysis.
-    /// Results are returned as an array with one entry per successfully downloaded type.
+    /// Use this after ``analysisStatus(for:)`` returns `.completed` to retrieve metrics,
+    /// a report, or raw data. Downloads run concurrently and failed downloads are silently
+    /// excluded from results.
     ///
-    /// - Parameters:
-    ///   - types: The analysis result types to download.
-    ///   - activity: The activity to download results from. Must have completed analysis.
-    /// - Returns: An array of analysis result data, one entry per requested type. Returns an empty
-    ///   array if no results are available or all downloads fail.
-    ///
-    /// ## Example
     /// ```swift
-    /// let results = await service.analysisResultData(ofType: [.metrics, .report, .data], for: activity)
+    /// let results = await service.analysisData(ofType: [.metrics, .report, .data], for: activity)
     ///
     /// for result in results {
     ///     switch result.resultDataType {
     ///     case .metrics:
-    ///         let decoder = JSONDecoder()
-    ///         // Decode metrics JSON from result.data
+    ///         // Decode result.data as JSON
     ///     case .report:
     ///         // Use result.data directly as a PDF
     ///     case .data:
@@ -246,78 +237,82 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// }
     /// ```
     ///
-    /// - Note: This method performs concurrent downloads for optimal performance.
-    ///   Individual download failures do not affect other requests and failed downloads
-    ///   are silently excluded from results.
+    /// - Parameters:
+    ///   - types: The analysis result types to download (e.g., `.metrics`, `.report`, `.data`).
+    ///   - activity: The activity to download results from. Must have a completed analysis.
+    /// - Returns: An array of ``AnalysisData``, one entry per successfully downloaded type.
+    ///   May be empty if no results are available or all downloads fail.
+    public func analysisData(
+        ofType types: Set<AnalysisDataType>,
+        for activity: Activity
+    ) async -> [AnalysisData] {
+        await serviceProvider.analysisData(ofType: types, for: activity)
+    }
+
+    @available(*, deprecated, renamed: "analysisData(ofType:for:)")
     public func analysisResultData(
         ofType types: Set<AnalysisResultDataType>,
         for activity: Activity
     ) async -> [AnalysisResultData] {
-        await serviceProvider.analysisResultData(ofType: types, for: activity)
+        []
     }
 
     // MARK: - Subject Management
 
-    /// Retrieves all subjects associated with the account.
+    /// Retrieves all subjects associated with the API key.
     ///
-    /// Subjects represent individuals being monitored or assessed. Each subject
-    /// contains demographic information, physical measurements, and categorization tags.
+    /// Subjects represent individuals being monitored or assessed. Each subject may
+    /// contain demographic information, physical measurements, and categorization tags.
     ///
     /// ```swift
     /// let subjects = try await service.subjectList()
     /// for subject in subjects {
     ///     print("\(subject.name): \(subject.height ?? 0)cm, \(subject.weight ?? 0)kg")
     /// }
-    ///
-    /// // Filter by tags
-    /// let athletes = subjects.filter { $0.subjectTags.contains("athlete") }
     /// ```
     ///
-    /// - Returns: An array of ``Subject`` objects
-    /// - Throws: An error if the request fails or authentication has expired
+    /// - Returns: An array of ``Subject`` objects, or an empty array if none exist.
+    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func subjectList() async throws -> [Subject] {
         try await serviceProvider.subjectList()
     }
 
     /// Retrieves activities for a specific subject with pagination and sorting.
     ///
-    /// This method allows you to fetch activities associated with a particular subject,
-    /// with control over pagination and sort order. This is useful for displaying
-    /// activity history or implementing infinite scroll interfaces.
+    /// Use this to display a subject's activity history or implement paginated list interfaces.
     ///
-    /// - Parameters:
-    ///   - subjectId: The ID of the subject whose activities to retrieve
-    ///   - startIndex: Zero-based index to start from (for pagination). Use 0 for first page.
-    ///   - count: Number of activities to retrieve per request
-    ///   - sort: Sort order for the results (e.g., `.updatedAt` for most recent first)
-    /// - Returns: An array of activities for the specified subject
-    /// - Throws: An error if the request fails or authentication has expired
-    ///
-    /// ## Example
     /// ```swift
-    /// // Get the 20 most recent activities for a subject
-    /// let recentActivities = try await service.getActivities(
+    /// // First page
+    /// let page1 = try await service.activities(
     ///     forSubject: subject.id,
     ///     startIndex: 0,
     ///     count: 20,
     ///     sortedBy: .updatedAt
     /// )
     ///
-    /// // Pagination - get the next 20 activities
-    /// let nextPage = try await service.getActivities(
+    /// // Next page
+    /// let page2 = try await service.activities(
     ///     forSubject: subject.id,
     ///     startIndex: 20,
     ///     count: 20,
     ///     sortedBy: .updatedAt
     /// )
     /// ```
-    public func getActivities(
+    ///
+    /// - Parameters:
+    ///   - subjectId: The ID of the subject whose activities to retrieve.
+    ///   - startIndex: Zero-based index to start from. Use `0` for the first page.
+    ///   - count: Number of activities to retrieve per request.
+    ///   - sort: Sort order for the results (e.g., `.updatedAt` for most recent first).
+    /// - Returns: An array of ``Activity`` objects, or an empty array if none exist.
+    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
+    public func activities(
         forSubject subjectId: String,
         startIndex: Int,
         count: Int,
         sortedBy sort: ActivitySort
     ) async throws -> [Activity] {
-        try await serviceProvider.getActivities(
+        try await serviceProvider.activities(
             forSubject: subjectId,
             startIndex: startIndex,
             count: count,
@@ -325,190 +320,161 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         )
     }
 
-    /// Retrieves a specific activity by its ID.
-    ///
-    /// Use this method to fetch the complete details of an activity, including
-    /// its videos, results, and current processing status.
-    ///
-    /// - Parameter activityId: The unique identifier of the activity
-    /// - Returns: The requested activity with all its details
-    /// - Throws: An error if the activity doesn't exist, or if authentication has expired
-    ///
-    /// ## Example
-    /// ```swift
-    /// let activity = try await service.get(activity: "abc123")
-    /// print("Activity: \(activity.name ?? "Unnamed")")
-    /// print("Status: \(activity.status)")
-    /// print("Videos: \(activity.videos.count)")
-    /// ```
-    public func get(activity activityId: String) async throws -> Activity {
-        try await serviceProvider.get(activity: activityId)
+    @available(*, deprecated, renamed: "activities(forSubject:startIndex:count:sortedBy:)")
+    public func getActivities(
+        forSubject subjectId: String,
+        startIndex: Int,
+        count: Int,
+        sortedBy sort: ActivitySort
+    ) async throws -> [Activity] {
+        []
     }
 
-    /// Updates an existing activity.
+    /// Retrieves an activity by its ID.
     ///
-    /// Use this method to modify activity properties such as the name.
-    /// The activity is updated on the server and the updated version is returned.
+    /// Use this to fetch the latest state of an activity, including its videos, results,
+    /// and current processing status.
     ///
-    /// - Parameter activity: The activity to update (with modified properties)
-    /// - Returns: The updated activity as stored on the server
-    /// - Throws: An error if the update fails or authentication has expired
-    ///
-    /// ## Example
     /// ```swift
-    /// var activity = try await service.get(activity: "abc123")
-    /// // Modify the activity name
-    /// activity.name = "CMJ Baseline Test"
-    /// let updated = try await service.update(activity: activity)
-    /// print("Updated: \(updated.name ?? "")")
+    /// let activity = try await service.fetch(activity: "abc123")
+    /// print("Activity: \(activity.name ?? "Unnamed")")
+    /// print("Status: \(activity.status)")
     /// ```
     ///
-    /// - Note: Not all activity properties can be modified. Only mutable fields
-    ///   (such as `name`) will be updated on the server.
+    /// - Parameter activityId: The unique identifier of the activity.
+    /// - Returns: The ``Activity`` with its current details.
+    /// - Throws: A ``ModelHealthError`` if the activity doesn't exist or the request fails.
+    public func fetch(activity activityId: String) async throws -> Activity {
+        try await serviceProvider.fetch(activity: activityId)
+    }
+
+    /// Updates an activity.
+    ///
+    /// Only mutable fields (such as `name`) are applied on the server. The server-side
+    /// state is returned, so use the result rather than the input going forward.
+    ///
+    /// ```swift
+    /// var activity = try await service.fetch(activity: "abc123")
+    /// activity.name = "CMJ Baseline Test"
+    /// let updated = try await service.update(activity: activity)
+    /// ```
+    ///
+    /// - Parameter activity: The activity to update, with modified properties.
+    /// - Returns: The updated ``Activity`` as stored on the server.
+    /// - Throws: A ``ModelHealthError`` if the update fails or the request fails.
     public func update(activity: Activity) async throws -> Activity {
         try await serviceProvider.update(activity: activity)
     }
 
-    /// Deletes an activity from the system.
+    /// Deletes an activity.
     ///
-    /// This permanently removes the activity and all its associated data,
-    /// including videos and analysis results. This action cannot be undone.
+    /// Permanently removes the activity and all associated videos, results, and metadata.
     ///
-    /// - Parameter activity: The activity to delete
-    /// - Throws: An error if the deletion fails or authentication has expired
-    ///
-    /// ## Example
     /// ```swift
-    /// let activity = try await service.get(activity: "abc123")
     /// try await service.delete(activity: activity)
-    /// // Activity and all associated data are now permanently deleted
     /// ```
     ///
-    /// - Warning: This operation is irreversible. All videos, analysis results,
-    ///   and metadata associated with this activity will be permanently lost.
+    /// > Warning: This operation is irreversible.
+    ///
+    /// - Parameter activity: The activity to delete.
+    /// - Throws: A ``ModelHealthError`` if the deletion fails or the request fails.
     public func delete(activity: Activity) async throws {
         try await serviceProvider.delete(activity: activity)
     }
 
     /// Retrieves all available activity tags.
     ///
-    /// Activity tags provide a way to categorize and filter activities.
-    /// This method returns all tags configured in the system, which can be
-    /// used for filtering or organizing activities in your application.
+    /// Use the returned tags to populate a tag picker or validate tag values before
+    /// assigning them to activities.
     ///
-    /// - Returns: An array of available activity tags
-    /// - Throws: An error if the request fails or authentication has expired
-    ///
-    /// ## Example
     /// ```swift
-    /// let tags = try await service.getActivityTags()
+    /// let tags = try await service.activityTags()
     /// for tag in tags {
     ///     print("\(tag.label): \(tag.value)")
     /// }
-    ///
-    /// // Use tags for filtering or categorization
-    /// let cmjTag = tags.first { $0.value == "cmj" }
     /// ```
-    public func getActivityTags() async throws -> [ActivityTag] {
-        try await serviceProvider.getActivityTags()
+    ///
+    /// - Returns: An array of ``ActivityTag`` objects, or an empty array if none are configured.
+    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
+    public func activityTags() async throws -> [ActivityTag] {
+        try await serviceProvider.activityTags()
     }
 
-    /// Creates a new subject in the system.
+    @available(*, deprecated, renamed: "activityTags()")
+    public func getActivityTags() async throws -> [ActivityTag] {
+        []
+    }
+
+    /// Creates a subject profile.
     ///
-    /// Subjects represent individuals being monitored or assessed. After creating
-    /// a subject, they can be associated with sessions for neutral pose calibration
-    /// and movement activities.
+    /// Height and weight are required for biomechanical analysis. Once created, the subject
+    /// can be calibrated using ``calibrateSubject(_:in:statusUpdate:)``.
     ///
     /// ```swift
     /// let params = SubjectParameters(
-    ///     name: "John Doe",
-    ///     weight: 75.0,        // kilograms
-    ///     height: 180.0,       // centimeters
+    ///     name: "John Smith",
+    ///     weight: 75.0,
+    ///     height: 180.0,
     ///     birthYear: 1990,
-    ///     gender: .man,
-    ///     sexAtBirth: .man,
-    ///     characteristics: "Regular training schedule",
-    ///     subjectTags: ["athlete"],
-    ///     terms: true
     /// )
-    ///
     /// let subject = try await service.createSubject(parameters: params)
     /// print("Created subject with ID: \(subject.id)")
     ///
     /// // Use the subject for calibration
-    /// try await service.calibrateNeutralPose(for: subject, in: session) { _ in }
+    /// try await service.calibrateSubject(subject, in: session) { _ in }
     /// ```
     ///
-    /// - Parameter parameters: Subject details including name, measurements, and tags
-    /// - Returns: The newly created ``Subject`` with its assigned ID
-    /// - Throws: An error if creation fails (validation errors, duplicate name, etc.)
+    /// - Parameter parameters: The subject's profile details including name and anthropometrics.
+    /// - Returns: The newly created ``Subject`` with its assigned ID.
+    /// - Throws: A ``ModelHealthError`` if creation fails (e.g., validation error or duplicate name).
     public func createSubject(parameters: SubjectParameters) async throws -> Subject {
         try await serviceProvider.createSubject(parameters: parameters)
     }
 
     // MARK: - Session & Calibration
 
-    /// Creates a new session.
+    /// Creates a session.
     ///
-    /// A session is required before performing camera calibration. It represents
-    /// a single calibration workflow and groups multiple cameras together.
-    ///
-    /// After creating a session, use ``calibrateCamera(_:checkerboardDetails:statusUpdate:)``
-    /// to calibrate your cameras.
+    /// A session is the parent container for a movement capture workflow. It links
+    /// related entities such as activities and subjects, and provides the context
+    /// used by subsequent operations.
     ///
     /// ```swift
-    /// // Create session
     /// let session = try await service.createSession()
+    /// ```
     ///
-    /// // Proceed with calibration
+    /// - Returns: A new ``Session`` with a unique identifier.
+    /// - Throws: A ``ModelHealthError`` if session creation fails.
+    public func createSession() async throws -> Session {
+        try await serviceProvider.createSession()
+    }
+
+    /// Calibrates cameras using a checkerboard pattern.
+    ///
+    /// Determines each camera's position and orientation in 3D space (extrinsics), enabling
+    /// reconstruction of real-world movement from multiple 2D video feeds. Required once per
+    /// session setup — recalibrate only if cameras are moved.
+    ///
+    /// > Note: `rows` and `columns` refer to internal corners, not squares. A 5×6 board has
+    /// > 4 internal corner rows and 5 internal corner columns.
+    ///
+    /// ```swift
     /// let details = CheckerboardDetails(
     ///     rows: 4,
     ///     columns: 5,
     ///     squareSize: 35,
     ///     placement: .perpendicular
     /// )
-    /// try await service.calibrateCamera(session, checkerboardDetails: details) { _ in }
-    /// ```
-    ///
-    /// - Returns: A ``Session`` object with a unique identifier
-    /// - Throws: An error if session creation fails
-    public func createSession() async throws -> Session {
-        try await serviceProvider.createSession()
-    }
-
-    /// Calibrates a camera using a checkerboard pattern.
-    ///
-    /// Camera calibration is essential for accurate 3D reconstruction. This process
-    /// determines the camera's intrinsic parameters and corrects for lens distortion.
-    ///
-    /// **Requirements:**
-    /// - A printed checkerboard pattern
-    /// - Accurate measurement of square size in millimeters
-    /// - Multiple views of the checkerboard from different angles
-    ///
-    /// The calibration is automated and typically completes in a few seconds once
-    /// sufficient checkerboard views are captured.
-    ///
-    /// ```swift
-    /// let session = try await service.createSession()
-    ///
-    /// let details = CheckerboardDetails(
-    ///     rows: 4,           // Internal corners, not squares (for 5×6 board)
-    ///     columns: 5,        // Internal corners, not squares (for 5×6 board)
-    ///     squareSize: 35,    // Measured in millimeters
-    ///     placement: .perpendicular
-    /// )
-    ///
-    /// // Start calibration - show checkerboard to camera from various angles
-    /// try await service.calibrateCamera(session, checkerboardDetails: details) { _ in }
-    /// // Calibration complete, proceed to neutral pose
+    /// try await service.calibrateCamera(session, checkerboardDetails: details) { status in
+    ///     print(status)
+    /// }
     /// ```
     ///
     /// - Parameters:
-    ///   - session: The session created with ``createSession()``
-    ///   - checkerboardDetails: Configuration of the calibration checkerboard
-    ///   - statusUpdate: Closure called with calibration progress updates
-    /// - Throws: An error if calibration fails (insufficient views, pattern not detected, etc.)
+    ///   - session: The session context in which calibration is performed.
+    ///   - checkerboardDetails: The checkerboard dimensions and placement used for calibration.
+    ///   - statusUpdate: Closure called with progress updates during calibration.
+    /// - Throws: A ``ModelHealthError`` if calibration fails (e.g., pattern not detected).
     public func calibrateCamera(
         _ session: Session,
         checkerboardDetails: CheckerboardDetails,
@@ -521,91 +487,94 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         )
     }
 
-    /// Captures the subject's neutral standing pose for model scaling.
+    /// Calibrates a subject by recording a neutral standing pose.
     ///
-    /// This step is required after camera calibration and before recording movement activities.
-    /// It takes a quick video of the subject standing in a neutral position, which is
-    /// used to scale the biomechanical model to match the subject's dimensions.
+    /// Scales the 3D biomechanical model to the subject's body size. Must be run after
+    /// camera calibration and requires the subject profile to include height and weight.
     ///
-    /// **Instructions for subject:**
-    /// - Stand upright in a relaxed, natural position
-    /// - Face forward with arms spread slightly at sides
-    /// - Remain still for a few seconds
+    /// > Important: The subject must stand upright, feet pointing forward, completely still,
+    /// > and fully visible to all cameras for the duration of the recording.
     ///
     /// ```swift
-    /// // After successful camera calibration
-    /// try await service.calibrateNeutralPose(for: subject, in: session) { _ in }
-    /// // Model now scaled, ready to record movement activities
+    /// try await service.calibrateSubject(subject, in: session) { status in
+    ///     print(status)
+    /// }
     /// ```
     ///
     /// - Parameters:
-    ///   - subject: The subject to calibrate the neutral pose for
-    ///   - session: The session to perform calibration in
-    ///   - statusUpdate: Closure called with calibration progress updates
-    /// - Throws: An error if pose capture fails (subject not detected, poor lighting, etc.)
-    public func calibrateNeutralPose(
-        for subject: Subject,
+    ///   - subject: The subject to calibrate
+    ///   - session: The session context in which calibration is performed
+    ///   - statusUpdate: Closure called with calibration status updates
+    /// - Throws: An error if pose capture fails (subject not detected, insufficient visibility, etc.)
+    public func calibrateSubject(
+        _ subject: Subject,
         in session: Session,
         statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
     ) async throws {
-        try await serviceProvider.calibrateNeutralPose(
-            for: subject,
+        try await serviceProvider.calibrateSubject(
+            subject,
             in: session,
             statusUpdate: statusUpdate
         )
     }
 
+    @available(*, deprecated, renamed: "calibrateSubject(_:in:statusUpdate:)")
+    public func calibrateNeutralPose(
+        for subject: Subject,
+        in session: Session,
+        statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
+    ) async throws {
+    }
+
     // MARK: - Recording & Analysis
 
-    /// Starts recording a dynamic movement activity.
+    /// Creates an activity and starts recording a dynamic movement trial.
     ///
-    /// After completing calibration steps (camera calibration and neutral pose),
-    /// use this method to begin recording an activity.
+    /// Must be called after both camera and subject calibration are complete.
+    /// Call ``stopRecording(_:)`` when the subject has finished the movement.
     ///
     /// ```swift
-    /// // Record a CMJ session
-    /// let activity = try await service.record(activityNamed: "cmj-2024", in: session)
-    /// // Subject performs CMJ while cameras record
-    ///
-    /// // When complete, stop recording
-    /// try await service.stopRecording(session: session)
+    /// let activity = try await service.startRecording(activityNamed: "cmj", in: session)
+    /// // Subject performs movement...
+    /// try await service.stopRecording(session)
     /// ```
     ///
     /// - Parameters:
-    ///   - name: A descriptive name for this activity (e.g., "cmj-test")
-    ///   - session: The session this activity is associated with
-    /// - Throws: An error if recording cannot start (session not calibrated, camera issues, etc.)
-    public func record(activityNamed name: String, in session: Session) async throws -> Activity {
-        try await serviceProvider.record(activityNamed: name, in: session)
+    ///   - name: A descriptive name for this activity (e.g., `"cmj"`, `"squat"`).
+    ///   - session: The session this activity is associated with.
+    /// - Returns: The newly created ``Activity``.
+    /// - Throws: A ``ModelHealthError`` if recording cannot start (e.g., missing calibration).
+    public func startRecording(activityNamed name: String, in session: Session) async throws -> Activity {
+        try await serviceProvider.startRecording(activityNamed: name, in: session)
     }
 
-    /// Stops recording of a dynamic movement activity in a session.
+    @available(*, deprecated, renamed: "startRecording(activityNamed:in:)")
+    public func record(activityNamed name: String, in session: Session) async throws -> Activity {
+        .forPreview()
+    }
+
+    /// Stops the active recording for a movement trial.
     ///
-    /// Call this method when the subject has completed the movement activity.
+    /// Call this after the subject has completed the movement. Once stopped, the recorded
+    /// videos begin uploading and can be tracked with ``activityStatus(for:)``.
     ///
     /// ```swift
-    /// // After recording is complete
-    /// try await service.stopRecording(session: Session)
+    /// try await service.stopRecording(session)
     /// ```
     ///
-    /// - Parameter session: The session to stop recording in
-    /// - Throws: An error if the activity cannot be stopped (invalid session ID, already stopped, etc.)
+    /// - Parameter session: The session context to stop recording in.
+    /// - Throws: A ``ModelHealthError`` if there is no active recording or the request fails.
     public func stopRecording(_ session: Session) async throws {
         try await serviceProvider.stopRecording(session)
     }
 
     /// Retrieves the current processing status of an activity.
     ///
-    /// Poll this method to determine when an activity is ready for analysis.
-    /// Activities must complete video upload and processing before analysis can begin.
+    /// Poll this method after ``stopRecording(_:)`` to track upload and processing progress.
+    /// Once the status reaches `.ready`, pass the activity to ``startAnalysis(_:for:in:)``.
     ///
-    /// - Parameter activity: A completed activity
-    /// - Returns: The current processing status
-    /// - Throws: Network or authentication errors
-    ///
-    /// ## Usage
     /// ```swift
-    /// let status = try await service.getStatus(forActivity: activity)
+    /// let status = try await service.activityStatus(for: activity)
     ///
     /// switch status {
     /// case .ready:
@@ -618,23 +587,24 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///     print("Processing failed")
     /// }
     /// ```
-    public func getStatus(forActivity activity: Activity) async throws -> ActivityProcessingStatus {
-        try await serviceProvider.getStatus(forActivity: activity)
+    ///
+    /// - Parameter activity: The activity to check status for.
+    /// - Returns: The current ``ActivityStatus``.
+    /// - Throws: A ``ModelHealthError`` if the request fails.
+    public func activityStatus(for activity: Activity) async throws -> ActivityStatus {
+        try await serviceProvider.activityStatus(for: activity)
     }
 
-    /// Starts an analysis task for a completed activity.
+    @available(*, deprecated, renamed: "activityStatus(for:)")
+    public func getStatus(forActivity activity: Activity) async throws -> ActivityProcessingStatus {
+        .failed
+    }
+
+    /// Starts an analysis task for an activity that is ready for analysis.
     ///
-    /// The activity must have completed processing (status `.ready`) before analysis can begin.
-    /// Use the returned `AnalysisTask` to poll for completion.
+    /// Call this after ``activityStatus(for:)`` returns `.ready`. Use the
+    /// returned ``Analysis`` with ``analysisStatus(for:)`` to poll progress.
     ///
-    /// - Parameters:
-    ///   - analysisType: The type of analysis to perform, .gait, .squats etc
-    ///   - activity: The activity to analyze
-    ///   - session: The session containing the activity
-    /// - Returns: An analysis task for tracking completion
-    /// - Throws: Network or authentication errors
-    ///
-    /// ## Usage
     /// ```swift
     /// let task = try await service.startAnalysis(
     ///     .counterMovementJump,
@@ -642,14 +612,20 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///     in: session
     /// )
     ///
-    /// // Poll for completion
-    /// let status = try await service.getAnalysisStatus(for: task)
+    /// let status = try await service.analysisStatus(for: task)
     /// ```
+    ///
+    /// - Parameters:
+    ///   - analysisType: The type of analysis to run (for example, `.gait`, `.counterMovementJump`).
+    ///   - activity: The activity to analyze.
+    ///   - session: The session context containing the activity.
+    /// - Returns: An ``Analysis`` for tracking analysis progress.
+    /// - Throws: A ``ModelHealthError`` if the activity is not ready or the request fails.
     public func startAnalysis(
         _ analysisType: AnalysisType,
         for activity: Activity,
         in session: Session
-    ) async throws -> AnalysisTask {
+    ) async throws -> Analysis {
         try await serviceProvider.startAnalysis(
             analysisType,
             for: activity,
@@ -659,37 +635,32 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
 
     /// Retrieves the current status of an analysis task.
     ///
-    /// Poll this method to monitor analysis progress. When status is `.completed` analysis results are ready for download.
+    /// Poll this method after ``startAnalysis(_:for:in:)`` to monitor progress.
+    /// When status reaches `.completed`, download results with ``analysisData(ofType:for:)``.
     ///
-    /// - Parameter task: The task returned from `startAnalysis`
-    /// - Returns: The current analysis status
-    /// - Throws: Network or authentication errors
-    ///
-    /// ## Usage
     /// ```swift
-    /// let status = try await service.getAnalysisStatus(for: task)
+    /// let status = try await service.analysisStatus(for: task)
     ///
     /// switch status {
     /// case .processing:
     ///     print("Analysis running...")
     /// case .completed:
-    ///     let results = await service.analysisResultData(ofType: [.metrics, .report], for: activity)
-    ///     for result in results {
-    ///         switch result.resultDataType {
-    ///         case .metrics:
-    ///             // JSON metrics – decode result.data
-    ///         case .report:
-    ///             // PDF – use result.data directly
-    ///         case .data:
-    ///             // ZIP – use result.data directly
-    ///         }
-    ///     }
+    ///     print("Analysis complete")
     /// case .failed:
     ///     print("Analysis failed")
     /// }
     /// ```
-    public func getAnalysisStatus(for task: AnalysisTask) async throws -> AnalysisTaskStatus {
-        try await serviceProvider.getAnalysisStatus(for: task)
+    ///
+    /// - Parameter task: The task returned from ``startAnalysis(_:for:in:)``.
+    /// - Returns: The current ``AnalysisStatus``.
+    /// - Throws: A ``ModelHealthError`` if the request fails.
+    public func analysisStatus(for task: Analysis) async throws -> AnalysisStatus {
+        try await serviceProvider.analysisStatus(for: task)
+    }
+
+    @available(*, deprecated, renamed: "analysisStatus(for:)")
+    public func getAnalysisStatus(for task: AnalysisTask) async throws -> AnalysisStatus {
+        .failed
     }
 }
 
@@ -705,16 +676,16 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/subjectList()``
     func subjectList() async throws -> [Subject]
 
-    /// See ``ModelHealthService/getActivities(forSubject:startIndex:count:sortedBy:)``
-    func getActivities(
+    /// See ``ModelHealthService/activities(forSubject:startIndex:count:sortedBy:)``
+    func activities(
         forSubject subjectId: String,
         startIndex: Int,
         count: Int,
         sortedBy sort: ActivitySort
     ) async throws -> [Activity]
 
-    /// See ``ModelHealthService/get(activity:)``
-    func get(activity activityId: String) async throws -> Activity
+    /// See ``ModelHealthService/fetch(activity:)``
+    func fetch(activity activityId: String) async throws -> Activity
 
     /// See ``ModelHealthService/update(activity:)``
     func update(activity: Activity) async throws -> Activity
@@ -722,8 +693,8 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/delete(activity:)``
     func delete(activity: Activity) async throws
 
-    /// See ``ModelHealthService/getActivityTags()``
-    func getActivityTags() async throws -> [ActivityTag]
+    /// See ``ModelHealthService/activityTags()``
+    func activityTags() async throws -> [ActivityTag]
 
     /// See ``ModelHealthService/activityList(for:)``
     func activityList(for session: Session) async throws -> [Activity]
@@ -731,14 +702,14 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/videos(for:version:)``
     func videos(for activity: Activity, version: VideoVersion) async -> [Data]
 
-    /// See ``ModelHealthService/data(ofType:for:)``
-    func data(ofType types: Set<ResultDataType>, for activity: Activity) async -> [ResultData]
+    /// See ``ModelHealthService/motionData(ofType:for:)``
+    func motionData(ofType types: Set<MotionDataType>, for activity: Activity) async -> [MotionData]
 
-    /// See ``ModelHealthService/analysisResultData(ofType:for:)``
-    func analysisResultData(
-        ofType types: Set<AnalysisResultDataType>,
+    /// See ``ModelHealthService/analysisData(ofType:for:)``
+    func analysisData(
+        ofType types: Set<AnalysisDataType>,
         for activity: Activity
-    ) async -> [AnalysisResultData]
+    ) async -> [AnalysisData]
 
     /// See ``ModelHealthService/createSession()``
     func createSession() async throws -> Session
@@ -746,8 +717,8 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/createSubject(parameters:)``
     func createSubject(parameters: SubjectParameters) async throws -> Subject
 
-    /// See ``ModelHealthService/record(activityNamed:in:)``
-    func record(activityNamed name: String, in session: Session) async throws -> Activity
+    /// See ``ModelHealthService/startRecording(activityNamed:in:)``
+    func startRecording(activityNamed name: String, in session: Session) async throws -> Activity
 
     /// See ``ModelHealthService/stopRecording(_:)``
     func stopRecording(_ session: Session) async throws
@@ -759,30 +730,30 @@ public protocol ModelHealthProvider {
         statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
     ) async throws
 
-    /// See ``ModelHealthService/calibrateNeutralPose(for:in:statusUpdate:)``
-    func calibrateNeutralPose(
-        for subject: Subject,
+    /// See ``ModelHealthService/calibrateSubject(_:in:statusUpdate:)``
+    func calibrateSubject(
+        _ subject: Subject,
         in session: Session,
         statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
     ) async throws
 
-    /// See ``ModelHealthService/getStatus(forActivity:)``
-    func getStatus(forActivity activity: Activity) async throws -> ActivityProcessingStatus
+    /// See ``ModelHealthService/activityStatus(for:)``
+    func activityStatus(for activity: Activity) async throws -> ActivityStatus
 
     /// See ``ModelHealthService/startAnalysis(_:for:in:)``
     func startAnalysis(
         _ analysisType: AnalysisType,
         for activity: Activity,
         in session: Session
-    ) async throws -> AnalysisTask
+    ) async throws -> Analysis
 
-    /// See ``ModelHealthService/getAnalysisStatus(for:)``
-    func getAnalysisStatus(for task: AnalysisTask) async throws -> AnalysisTaskStatus
+    /// See ``ModelHealthService/analysisStatus(for:)``
+    func analysisStatus(for task: Analysis) async throws -> AnalysisStatus
 }
 
-/// Errors that may be thrown by ModelHealthService
+/// Errors thrown by ``ModelHealthService``.
 public enum ModelHealthError: Error, Sendable {
-    /// Errors specific to camera or neutral pose calibration
+    /// Errors specific to camera or subject calibration
     public enum CalibrationError: Sendable {
         case notEnoughCameras
         case calibrationFailed
@@ -790,8 +761,11 @@ public enum ModelHealthError: Error, Sendable {
 
     /// HTTP response errors with status codes and optional server message
     public enum HTTPError: Sendable {
-        case clientError(statusCode: Int)  // 400-499
-        case serverError(statusCode: Int)  // 500-599
+        /// A client error response (400–499).
+        case clientError(statusCode: Int)
+        /// A server error response (500–599).
+        case serverError(statusCode: Int)
+        /// A response with an unexpected status code.
         case unexpectedStatusCode(statusCode: Int)
     }
 
