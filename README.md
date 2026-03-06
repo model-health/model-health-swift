@@ -4,7 +4,7 @@ Swift/iOS SDK for biomechanical analysis from smartphone videos.
 
 ## Requirements
 
-- iOS 15.0+ / macOS 12.0+
+- iOS 17.0+ / macOS 14.0+
 - Xcode 15.0+
 - Swift 5.9+
 
@@ -22,7 +22,7 @@ Or add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/model-health/model-health-swift", from: "0.1.49")
+    .package(url: "https://github.com/model-health/model-health-swift", from: "0.1.50")
 ]
 ```
 
@@ -37,9 +37,9 @@ let sessions = try await service.getSessions()
 
 ## Documentation
 
-**Full API Documentation**: [docs.modelhealth.io](https://docs.modelhealth.io)
+Full API Documentation: [docs.modelhealth.io](https://docs.modelhealth.io)
 
 ## Other SDKs
 
-- **TypeScript/Web**: [`@modelhealth/modelhealth`](https://www.npmjs.com/package/@modelhealth/modelhealth)
-- **All SDKs**: [github.com/model-health/model-health](https://github.com/model-health/model-health)
+- TypeScript/Web: [`@modelhealth/modelhealth`](https://www.npmjs.com/package/@modelhealth/modelhealth)
+- All SDKs: [github.com/model-health/model-health](https://github.com/model-health/model-health)
