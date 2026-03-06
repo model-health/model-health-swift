@@ -280,11 +280,6 @@ public enum MotionDataType: Hashable, Sendable {
     }
 }
 
-@available(*, deprecated, renamed: "MotionDataType")
-public enum ResultDataType: Hashable, Sendable {
-    case animation
-}
-
 /// Motion data downloaded from a processed activity.
 ///
 /// Each instance carries the ``type`` that was requested, which also
@@ -306,12 +301,6 @@ public struct MotionData: Sendable {
     public let data: Data
 }
 
-@available(*, deprecated, renamed: "MotionData")
-public struct ResultData: Sendable {
-    public let resultDataType: ResultDataType
-    public let data: Data
-}
-
 // MARK: - Analysis Result Data
 
 /// The type of analysis result data to download from an activity with a completed analysis.
@@ -326,11 +315,6 @@ public enum AnalysisDataType: Hashable, Sendable {
     case data
     /// Analysis report. Always PDF format.
     case report
-}
-
-@available(*, deprecated, renamed: "AnalysisDataType")
-public enum AnalysisResultDataType: Hashable, Sendable {
-    case metrics
 }
 
 /// Analysis result data downloaded from an activity with a completed analysis.
@@ -356,12 +340,6 @@ public struct AnalysisData: Sendable {
     public let type: AnalysisDataType
 
     /// The raw file data. Parse according to the format implied by ``type``.
-    public let data: Data
-}
-
-@available(*, deprecated, renamed: "AnalysisData")
-public struct AnalysisResultData: Sendable {
-    public let resultDataType: AnalysisResultDataType
     public let data: Data
 }
 
@@ -524,21 +502,11 @@ public enum ActivityStatus: Sendable {
     case failed
 }
 
-@available(*, deprecated, renamed: "ActivityStatus")
-public enum ActivityProcessingStatus: Sendable {
-    case failed
-}
-
 /// An active analysis returned by ``ModelHealthService/startAnalysis(_:for:in:)``.
 ///
 /// Pass to ``ModelHealthService/analysisStatus(for:)`` to poll for completion.
 public struct Analysis: Sendable, Identifiable {
     public let id: String
-}
-
-@available(*, deprecated, renamed: "Analysis")
-public struct AnalysisTask: Sendable {
-    public let taskId: String
 }
 
 /// The current state of an analysis.
@@ -548,11 +516,6 @@ public enum AnalysisStatus: Sendable {
     /// Analysis completed successfully.
     case completed
     /// Analysis failed.
-    case failed
-}
-
-@available(*, deprecated, renamed: "AnalysisStatus")
-public enum AnalysisTaskStatus: Sendable {
     case failed
 }
 

@@ -211,11 +211,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         await serviceProvider.motionData(ofType: types, for: activity)
     }
 
-    @available(*, deprecated, renamed: "motionData(ofType:for:)")
-    public func data(ofType types: Set<ResultDataType>, for activity: Activity) async -> [ResultData] {
-        []
-    }
-
     /// Downloads result data for an activity with a completed analysis.
     ///
     /// Use this after ``analysisStatus(for:)`` returns `.completed` to retrieve metrics,
@@ -247,14 +242,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         for activity: Activity
     ) async -> [AnalysisData] {
         await serviceProvider.analysisData(ofType: types, for: activity)
-    }
-
-    @available(*, deprecated, renamed: "analysisData(ofType:for:)")
-    public func analysisResultData(
-        ofType types: Set<AnalysisResultDataType>,
-        for activity: Activity
-    ) async -> [AnalysisResultData] {
-        []
     }
 
     // MARK: - Subject Management
@@ -318,16 +305,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
             count: count,
             sortedBy: sort
         )
-    }
-
-    @available(*, deprecated, renamed: "activities(forSubject:startIndex:count:sortedBy:)")
-    public func getActivities(
-        forSubject subjectId: String,
-        startIndex: Int,
-        count: Int,
-        sortedBy sort: ActivitySort
-    ) async throws -> [Activity] {
-        []
     }
 
     /// Retrieves an activity by its ID.
@@ -398,11 +375,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func activityTags() async throws -> [ActivityTag] {
         try await serviceProvider.activityTags()
-    }
-
-    @available(*, deprecated, renamed: "activityTags()")
-    public func getActivityTags() async throws -> [ActivityTag] {
-        []
     }
 
     /// Creates a subject profile.
@@ -518,14 +490,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         )
     }
 
-    @available(*, deprecated, renamed: "calibrateSubject(_:in:statusUpdate:)")
-    public func calibrateNeutralPose(
-        for subject: Subject,
-        in session: Session,
-        statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
-    ) async throws {
-    }
-
     // MARK: - Recording & Analysis
 
     /// Creates an activity and starts recording a dynamic movement trial.
@@ -546,11 +510,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Throws: A ``ModelHealthError`` if recording cannot start (e.g., missing calibration).
     public func startRecording(activityNamed name: String, in session: Session) async throws -> Activity {
         try await serviceProvider.startRecording(activityNamed: name, in: session)
-    }
-
-    @available(*, deprecated, renamed: "startRecording(activityNamed:in:)")
-    public func record(activityNamed name: String, in session: Session) async throws -> Activity {
-        .forPreview()
     }
 
     /// Stops the active recording for a movement trial.
@@ -593,11 +552,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Throws: A ``ModelHealthError`` if the request fails.
     public func activityStatus(for activity: Activity) async throws -> ActivityStatus {
         try await serviceProvider.activityStatus(for: activity)
-    }
-
-    @available(*, deprecated, renamed: "activityStatus(for:)")
-    public func getStatus(forActivity activity: Activity) async throws -> ActivityProcessingStatus {
-        .failed
     }
 
     /// Starts an analysis task for an activity that is ready for analysis.
@@ -656,11 +610,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Throws: A ``ModelHealthError`` if the request fails.
     public func analysisStatus(for task: Analysis) async throws -> AnalysisStatus {
         try await serviceProvider.analysisStatus(for: task)
-    }
-
-    @available(*, deprecated, renamed: "analysisStatus(for:)")
-    public func getAnalysisStatus(for task: AnalysisTask) async throws -> AnalysisStatus {
-        .failed
     }
 }
 
