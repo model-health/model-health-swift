@@ -61,11 +61,12 @@ import Foundation
 ///
 /// ### Session & Calibration
 /// - ``createSession()``
+/// - ``configure(session:config:)``
 /// - ``calibrateCamera(_:checkerboardDetails:statusUpdate:)``
 /// - ``calibrateSubject(_:in:statusUpdate:)``
 ///
 /// ### Recording & Analysis
-/// - ``startRecording(activityNamed:in:)``
+/// - ``startRecording(activityNamed:in:config:)``
 /// - ``stopRecording(_:)``
 /// - ``activityStatus(for:)``
 /// - ``startAnalysis(_:for:in:)``
@@ -249,7 +250,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// Retrieves all subjects associated with the API key.
     ///
     /// Subjects represent individuals being monitored or assessed. Each subject may
-    /// contain demographic information, physical measurements, and categorization tags.
+    /// contain demographic information, physical measurements and categorization tags.
     ///
     /// ```swift
     /// let subjects = try await service.subjectList()
@@ -294,7 +295,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Returns: An array of ``Activity`` objects, or an empty array if none exist.
     /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func activities(
-        forSubject subjectId: String,
+        forSubject subjectId: Int,
         startIndex: Int,
         count: Int,
         sortedBy sort: ActivitySort
@@ -345,7 +346,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
 
     /// Deletes an activity.
     ///
-    /// Permanently removes the activity and all associated videos, results, and metadata.
+    /// Permanently removes the activity and all associated videos, results and metadata.
     ///
     /// ```swift
     /// try await service.delete(activity: activity)
@@ -408,8 +409,11 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// Creates a session.
     ///
     /// A session is the parent container for a movement capture workflow. It links
-    /// related entities such as activities and subjects, and provides the context
+    /// related entities such as activities and subjects and provides the context
     /// used by subsequent operations.
+    ///
+    /// Default session settings are applied automatically. Call
+    /// ``configure(session:config:)`` afterwards to override specific settings.
     ///
     /// ```swift
     /// let session = try await service.createSession()
@@ -419,6 +423,28 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Throws: A ``ModelHealthError`` if session creation fails.
     public func createSession() async throws -> Session {
         try await serviceProvider.createSession()
+    }
+
+    /// Applies settings to an existing session.
+    ///
+    /// Call this after ``createSession()`` and before calibration to override
+    /// any default settings. If not called, the session retains the defaults
+    /// applied during creation.
+    ///
+    /// ```swift
+    /// let session = try await service.createSession()
+    /// try await service.configure(session: session, config: SessionConfig(
+    ///     framerate: .fps60,
+    ///     dataSharing: .shareNoData
+    /// ))
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - session: The session to configure.
+    ///   - config: The settings to apply. Use ``SessionConfig/default`` for all defaults.
+    /// - Throws: A ``ModelHealthError`` if the request fails.
+    public func configure(session: Session, config: SessionConfig = .default) async throws {
+        try await serviceProvider.configure(session: session, config: config)
     }
 
     /// Calibrates cameras using a checkerboard pattern.
@@ -506,10 +532,11 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Parameters:
     ///   - name: A descriptive name for this activity (e.g., `"cmj"`, `"squat"`).
     ///   - session: The session this activity is associated with.
+    ///   - config: Optional recording configuration.
     /// - Returns: The newly created ``Activity``.
     /// - Throws: A ``ModelHealthError`` if recording cannot start (e.g., missing calibration).
-    public func startRecording(activityNamed name: String, in session: Session) async throws -> Activity {
-        try await serviceProvider.startRecording(activityNamed: name, in: session)
+    public func startRecording(activityNamed name: String, in session: Session, config: ActivityConfig? = nil) async throws -> Activity {
+        try await serviceProvider.startRecording(activityNamed: name, in: session, config: config)
     }
 
     /// Stops the active recording for a movement trial.
@@ -570,18 +597,18 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// ```
     ///
     /// - Parameters:
-    ///   - analysisType: The type of analysis to run (for example, `.gait`, `.counterMovementJump`).
+    ///   - activityType: The type of analysis to run (for example, `.gait`, `.counterMovementJump`).
     ///   - activity: The activity to analyze.
     ///   - session: The session context containing the activity.
     /// - Returns: An ``Analysis`` for tracking analysis progress.
     /// - Throws: A ``ModelHealthError`` if the activity is not ready or the request fails.
     public func startAnalysis(
-        _ analysisType: AnalysisType,
+        _ activityType: ActivityType,
         for activity: Activity,
         in session: Session
     ) async throws -> Analysis {
         try await serviceProvider.startAnalysis(
-            analysisType,
+            activityType,
             for: activity,
             in: session
         )
@@ -611,6 +638,130 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     public func analysisStatus(for task: Analysis) async throws -> AnalysisStatus {
         try await serviceProvider.analysisStatus(for: task)
     }
+
+    // MARK: - Import
+
+    /// Imports a set of activities into a new session.
+    ///
+    /// This method performs the full import workflow for each activity:
+    /// 1. Creates a new session
+    /// 2. Applies `config` to the session
+    /// 3. Associates `subject` with the session
+    /// 4. For each activity: creates it, patches metadata, transfers all videos,
+    ///    and triggers processing. Calibration and neutral are polled until ready;
+    ///    other activities are fired and forgotten.
+    ///
+    /// Progress is reported via `statusUpdate`, which receives
+    /// ``ImportStatus/creatingSession``, ``ImportStatus/uploadingVideo(trial:uploaded:total:)``
+    /// and ``ImportStatus/processing`` values.
+    ///
+    /// ```swift
+    /// let session = try await service.importSession(
+    ///     activitiesJson,
+    ///     subject: subject,
+    ///     config: SessionConfig(framerate: .fps60)
+    /// ) { status in
+    ///     switch status {
+    ///     case .creatingSession:
+    ///         print("Creating session...")
+    ///     case .uploadingVideo(let trial, let uploaded, let total):
+    ///         print("[\(trial)] \(uploaded)/\(total)")
+    ///     case .processing:
+    ///         print("Processing...")
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - activitiesJson: A JSON array of activity objects to import.
+    ///   - subject: The subject to associate with the session.
+    ///   - config: Session configuration. Defaults to ``SessionConfig/default``.
+    ///   - statusUpdate: Closure called with progress updates. Defaults to a no-op.
+    /// - Returns: The newly created ``Session`` containing all imported activities.
+    /// - Throws: A ``ModelHealthError`` if any step of the import fails.
+    public func importSession(
+        _ activitiesJson: String,
+        subject: Subject,
+        config: SessionConfig = .default,
+        statusUpdate: @escaping @Sendable (ImportStatus) -> Void = { _ in }
+    ) async throws -> Session {
+        try await serviceProvider.importSession(
+            activitiesJson,
+            subject: subject,
+            config: config,
+            statusUpdate: statusUpdate
+        )
+    }
+
+    // MARK: - Archive
+
+    /// Begins preparing a session archive.
+    ///
+    /// Kicks off a server-side task that packages the session data into a ZIP file.
+    /// Poll ``archiveStatus(for:)`` until the status is `.ready`, then download the
+    /// archive with ``archiveData(for:)``.
+    ///
+    /// ```swift
+    /// let archive = try await service.prepareArchive(for: session)
+    ///
+    /// var status: ArchiveStatus
+    /// repeat {
+    ///     status = try await service.archiveStatus(for: archive)
+    /// } while status == .processing
+    ///
+    /// let zipData = try await service.archiveData(for: archive)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - session: The session to archive.
+    ///   - withVideos: Whether to include raw videos in the archive. Defaults to `false`.
+    /// - Returns: An ``Archive`` for tracking archive preparation progress.
+    /// - Throws: A ``ModelHealthError`` if the request fails.
+    public func prepareArchive(for session: Session, withVideos: Bool = false) async throws -> Archive {
+        try await serviceProvider.prepareArchive(for: session, withVideos: withVideos)
+    }
+
+    /// Retrieves the current status of an archive preparation task.
+    ///
+    /// Poll this method after ``prepareArchive(for:withVideos:)`` until the status is
+    /// `.ready`, then download the archive with ``archiveData(for:)``.
+    ///
+    /// ```swift
+    /// let status = try await service.archiveStatus(for: archive)
+    ///
+    /// switch status {
+    /// case .processing:
+    ///     print("Archive being prepared...")
+    /// case .ready:
+    ///     print("Archive ready to download")
+    /// case .failed:
+    ///     print("Archive preparation failed")
+    /// }
+    /// ```
+    ///
+    /// - Parameter archive: The archive returned from ``prepareArchive(for:withVideos:)``.
+    /// - Returns: The current ``ArchiveStatus``.
+    /// - Throws: A ``ModelHealthError`` if the request fails.
+    public func archiveStatus(for archive: Archive) async throws -> ArchiveStatus {
+        try await serviceProvider.archiveStatus(for: archive)
+    }
+
+    /// Downloads the prepared archive as raw ZIP data.
+    ///
+    /// Call this after ``archiveStatus(for:)`` returns `.ready`. The download URL is
+    /// managed internally and cached for the lifetime of the service instance.
+    ///
+    /// ```swift
+    /// let zipData = try await service.archiveData(for: archive)
+    /// try zipData.write(to: URL(fileURLWithPath: "session.zip"))
+    /// ```
+    ///
+    /// - Parameter archive: The archive returned from ``prepareArchive(for:withVideos:)``.
+    /// - Returns: The raw ZIP file bytes.
+    /// - Throws: A ``ModelHealthError`` if the archive is not yet ready or the download fails.
+    public func archiveData(for archive: Archive) async throws -> Data {
+        try await serviceProvider.archiveData(for: archive)
+    }
 }
 
 /// Defines ModelHealth SDK operations for dependency injection and testing.
@@ -627,7 +778,7 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthService/activities(forSubject:startIndex:count:sortedBy:)``
     func activities(
-        forSubject subjectId: String,
+        forSubject subjectId: Int,
         startIndex: Int,
         count: Int,
         sortedBy sort: ActivitySort
@@ -663,11 +814,14 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/createSession()``
     func createSession() async throws -> Session
 
+    /// See ``ModelHealthService/configure(session:config:)``
+    func configure(session: Session, config: SessionConfig) async throws
+
     /// See ``ModelHealthService/createSubject(parameters:)``
     func createSubject(parameters: SubjectParameters) async throws -> Subject
 
-    /// See ``ModelHealthService/startRecording(activityNamed:in:)``
-    func startRecording(activityNamed name: String, in session: Session) async throws -> Activity
+    /// See ``ModelHealthService/startRecording(activityNamed:in:config:)``
+    func startRecording(activityNamed name: String, in session: Session, config: ActivityConfig?) async throws -> Activity
 
     /// See ``ModelHealthService/stopRecording(_:)``
     func stopRecording(_ session: Session) async throws
@@ -691,13 +845,30 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthService/startAnalysis(_:for:in:)``
     func startAnalysis(
-        _ analysisType: AnalysisType,
+        _ activityType: ActivityType,
         for activity: Activity,
         in session: Session
     ) async throws -> Analysis
 
     /// See ``ModelHealthService/analysisStatus(for:)``
     func analysisStatus(for task: Analysis) async throws -> AnalysisStatus
+
+    /// See ``ModelHealthService/importSession(_:subject:config:statusUpdate:)``
+    func importSession(
+        _ activitiesJson: String,
+        subject: Subject,
+        config: SessionConfig,
+        statusUpdate: @escaping @Sendable (ImportStatus) -> Void
+    ) async throws -> Session
+
+    /// See ``ModelHealthService/prepareArchive(for:withVideos:)``
+    func prepareArchive(for session: Session, withVideos: Bool) async throws -> Archive
+
+    /// See ``ModelHealthService/archiveStatus(for:)``
+    func archiveStatus(for archive: Archive) async throws -> ArchiveStatus
+
+    /// See ``ModelHealthService/archiveData(for:)``
+    func archiveData(for archive: Archive) async throws -> Data
 }
 
 /// Errors thrown by ``ModelHealthService``.

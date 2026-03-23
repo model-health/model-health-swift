@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Session
 
 /// A parent container for a movement capture workflow.
-/// Sessions link related entities such as activities and subjects, and provide the context used by subsequent operations.
+/// Sessions link related entities such as activities and subjects and provide the context used by subsequent operations.
 ///
 /// Create a session with ``ModelHealthService/createSession()`` before performing subsequent operations like camera calibration.
 ///
@@ -200,6 +200,8 @@ public struct Activity: Sendable {
     public let status: String
     public let videos: [Video]
     public let results: [Result]
+    /// The activity type associated with this recording, if one was set.
+    public let activityType: ActivityType?
 }
 
 /// Sort order for activity lists.
@@ -267,6 +269,7 @@ public enum MotionDataType: Hashable, Sendable {
     public enum KinematicsFormat: Sendable {
         /// OpenSim motion (.mot) format.
         case mot
+
         /// Comma-separated values (.csv) format.
         case csv
     }
@@ -275,6 +278,7 @@ public enum MotionDataType: Hashable, Sendable {
     public enum MarkersFormat: Sendable {
         /// TRC marker trajectory (.trc) format.
         case trc
+
         /// Comma-separated values (.csv) format.
         case csv
     }
@@ -311,8 +315,10 @@ public struct MotionData: Sendable {
 public enum AnalysisDataType: Hashable, Sendable {
     /// Computed biomechanical metrics. Always JSON format.
     case metrics
+
     /// Extended analysis data. Always ZIP format.
     case data
+
     /// Analysis report. Always PDF format.
     case report
 }
@@ -450,7 +456,7 @@ public enum CalibrationStatus: Sendable {
 /// Available analysis types for motion capture activities.
 ///
 /// Analysis can only be performed on activities that have reached `.ready` status.
-public enum AnalysisType: String, CaseIterable, Sendable {
+public enum ActivityType: String, CaseIterable, Sendable {
     /// Counter Movement Jump.
     case counterMovementJump = "Counter Movement Jump"
 
@@ -488,16 +494,38 @@ public enum AnalysisType: String, CaseIterable, Sendable {
     case cut = "Cutting Maneuver"
 }
 
+/// Configuration for starting a recording.
+public struct ActivityConfig: Sendable {
+
+    /// The activity type to associate with this recording.
+    ///
+    /// When set, the corresponding analysis starts automatically once the recording is processed.
+    public let activityType: ActivityType
+
+    public init(activityType: ActivityType) {
+        self.activityType = activityType
+    }
+}
+
 /// The current processing state of an activity.
 ///
 /// Activities must reach `.ready` before analysis can begin.
 public enum ActivityStatus: Sendable {
     /// Videos are being uploaded. `uploaded` and `total` track progress.
     case uploading(uploaded: Int, total: Int)
+
     /// Videos have been uploaded and are being processed.
     case processing
+
     /// Processing is complete. The activity is ready for analysis.
     case ready
+
+    /// Analysis has been triggered and is in progress.
+    ///
+    /// Pass the associated ``Analysis`` to ``ModelHealthService/analysisStatus(for:)``
+    /// to track analysis progress.
+    case analyzing(Analysis)
+
     /// Processing failed.
     case failed
 }
@@ -513,10 +541,216 @@ public struct Analysis: Sendable, Identifiable {
 public enum AnalysisStatus: Sendable {
     /// Analysis is in progress.
     case processing
+
     /// Analysis completed successfully.
     case completed
+
     /// Analysis failed.
     case failed
+}
+
+// MARK: - Archive
+
+/// An active async archive preparation task returned by ``ModelHealthService/prepareArchive(for:withVideos:)``.
+///
+/// Pass to ``ModelHealthService/archiveStatus(for:)`` to poll for readiness,
+/// then to ``ModelHealthService/archiveData(for:)`` to download the ZIP file.
+public struct Archive: Sendable, Identifiable {
+    public let id: String
+}
+
+/// The current state of an archive preparation task.
+public enum ArchiveStatus: Sendable {
+    /// The archive is being prepared.
+    case processing
+
+    /// The archive is ready to download.
+    case ready
+
+    /// The archive preparation failed.
+    case failed
+}
+
+// MARK: - Import Status
+
+/// The current status of a session import.
+///
+/// Reported during ``ModelHealthService/importSession(_:subject:config:statusUpdate:)``,
+/// tracking session creation, video upload and processing stages.
+///
+/// ```swift
+/// try await service.importSession(activitiesJson, subject: subject) { status in
+///     switch status {
+///     case .creatingSession:
+///         print("Creating session...")
+///     case .uploadingVideo(let trial, let uploaded, let total):
+///         print("[\(trial)] Uploading: \(uploaded)/\(total)")
+///     case .processing:
+///         print("Processing...")
+///     }
+/// }
+/// ```
+public enum ImportStatus: Sendable {
+    /// A new session is being created on the server.
+    case creatingSession
+
+    /// The session was created successfully.
+    ///
+    /// - Parameter sessionId: The ID of the newly created session.
+    case createdSession(sessionId: String)
+
+    /// A video is being uploaded to the server.
+    ///
+    /// - Parameters:
+    ///   - trial: The name of the trial whose video is being uploaded.
+    ///   - uploaded: The number of videos successfully uploaded so far.
+    ///   - total: The total number of videos to upload.
+    case uploadingVideo(trial: String, uploaded: Int, total: Int)
+
+    /// Videos have been uploaded and the server is processing the trial.
+    case processing
+}
+
+// MARK: - Session Configuration
+
+/// Camera frame rate for a recording session.
+///
+/// Higher framerates capture fast movements more accurately but increase
+/// processing time proportionally. Collect only as much footage as needed
+/// and keep recordings under the suggested durations.
+public enum SessionFramerate: CaseIterable, Sendable {
+    /// 60 frames per second. Suggested maximum recording duration: 60 s.
+    case fps60
+
+    /// 120 frames per second (default). Suggested maximum recording duration: 30 s.
+    case fps120
+
+    /// 240 frames per second. Suggested maximum recording duration: 15 s.
+    case fps240
+}
+
+/// OpenSim musculoskeletal model used for biomechanical analysis.
+public enum SessionOpenSimModel: CaseIterable, Sendable {
+    /// Full-body model with 33 degrees of freedom plus a 6-DoF shoulder
+    /// complex with a scapulothoracic body and a glenohumeral joint using the
+    /// ISB-recommended Y-X-Y rotation sequence. Default.
+    case laiUhlrich2022Shoulder
+
+    /// Same full-body model as ``laiUhlrich2022Shoulder`` without the ISB
+    /// shoulder complex.
+    case laiUhlrich2022
+}
+
+/// Pose used for subject scaling during calibration.
+public enum SessionScalingSetup: CaseIterable, Sendable {
+    /// Subject stands straight with feet pointing forward and no bending or
+    /// rotation at the hips, knees, or ankles. Default.
+    case uprightStandingPose
+
+    /// No posture assumptions. Use when the subject cannot adopt the upright
+    /// standing pose. Requires all body segments to be visible by at least
+    /// two cameras.
+    case anyPose
+}
+
+/// Core processing engine version.
+public enum SessionCoreEngine: CaseIterable, Sendable {
+    /// Version 0.2.
+    case v0_2
+
+    /// Version 0.3 (default).
+    case v0_3
+
+    /// Version 1.0. Currently in beta.
+    case v1_0
+}
+
+/// Frequency of the low-pass filter applied to kinematic results.
+///
+/// The server applies a low-pass Butterworth filter to 2D video keypoints.
+/// The specified frequency applies to all motion trials in the session.
+/// Per the Nyquist theorem the value must be less than half the session
+/// framerate; if it exceeds that the server clamps it automatically.
+public enum FilterFrequency: Sendable {
+    /// Let the server choose the optimal filter frequency (default).
+    /// The server uses 20 Hz by default.
+    case `default`
+
+    /// A specific frequency in Hz.
+    case hz(Int)
+}
+
+/// Data-sharing preference for a session.
+///
+/// Session data and videos are uploaded to a secure cloud server for
+/// processing. This setting controls what Model Health can use for internal
+/// development. Identified videos contain original footage with faces
+/// unblurred; de-identified videos have faces blurred. Processed data
+/// (e.g. joint angles) is always de-identified.
+public enum SessionDataSharing: CaseIterable, Sendable {
+    /// Share processed data and identified videos (default).
+    case shareProcessedDataAndIdentifiedVideos
+
+    /// Share processed data and de-identified videos (faces blurred).
+    case shareProcessedDataAndDeidentifiedVideos
+
+    /// Share processed data only. No videos are shared.
+    case shareProcessedData
+
+    /// Share no data for internal development.
+    case shareNoData
+}
+
+/// Settings applied to a session before calibration and recording.
+///
+/// All fields have sensible defaults. Use the no-argument initialiser or
+/// ``default`` for a fully default configuration, then override only what
+/// you need:
+///
+/// ```swift
+/// // Fully default
+/// let config = SessionConfig()
+///
+/// // Custom frame rate and data-sharing only
+/// let config = SessionConfig(framerate: .fps60, dataSharing: .shareNoData)
+/// ```
+public struct SessionConfig: Sendable {
+    /// Camera frame rate. Default: `.fps120`.
+    public var framerate: SessionFramerate
+
+    /// OpenSim musculoskeletal model. Default: `.laiUhlrich2022Shoulder`.
+    public var opensimModel: SessionOpenSimModel
+
+    /// Pose used for subject scaling. Default: `.uprightStandingPose`.
+    public var scalingSetup: SessionScalingSetup
+
+    /// Core processing engine version. Default: `.v0_3`.
+    public var coreEngine: SessionCoreEngine
+
+    /// Low-pass filter frequency. Default: `.default` (server-chosen).
+    public var filterFrequency: FilterFrequency
+
+    /// Data-sharing preference. Default: `.shareProcessedDataAndIdentifiedVideos`.
+    public var dataSharing: SessionDataSharing
+
+    public init(
+        framerate: SessionFramerate = .fps120,
+        opensimModel: SessionOpenSimModel = .laiUhlrich2022Shoulder,
+        scalingSetup: SessionScalingSetup = .uprightStandingPose,
+        coreEngine: SessionCoreEngine = .v0_3,
+        filterFrequency: FilterFrequency = .default,
+        dataSharing: SessionDataSharing = .shareProcessedDataAndIdentifiedVideos
+    ) {
+        self.framerate = framerate
+        self.opensimModel = opensimModel
+        self.scalingSetup = scalingSetup
+        self.coreEngine = coreEngine
+        self.filterFrequency = filterFrequency
+        self.dataSharing = dataSharing
+    }
+
+    /// A configuration with all default values.
+    public static let `default` = SessionConfig()
 }
 
 // MARK: - SwiftUI #Preview support
@@ -636,6 +870,7 @@ extension Activity {
         public var status: String = "done"
         public var videos: [Video] = []
         public var results: [Activity.Result] = []
+        public var activityType: ActivityType? = nil
 
         func build() -> Activity {
             Activity(
@@ -644,7 +879,8 @@ extension Activity {
                 name: name,
                 status: status,
                 videos: videos,
-                results: results
+                results: results,
+                activityType: activityType
             )
         }
     }
@@ -742,6 +978,24 @@ extension Analysis {
 
         func build() -> Analysis {
             Analysis(id: taskId)
+        }
+    }
+}
+
+extension Archive {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var archiveId = "preview-archive-task"
+
+        func build() -> Archive {
+            Archive(id: archiveId)
         }
     }
 }

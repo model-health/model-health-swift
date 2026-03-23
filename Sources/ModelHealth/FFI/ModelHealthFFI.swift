@@ -78,6 +78,7 @@ struct CTrial {
     let status: UnsafeMutablePointer<CChar>?
     let videos: CVideoArray
     let results: CTrialResultArray
+    let activity_type: Int32  // -1 = none, 0–11 = ActivityType discriminant
 }
 
 struct CTrialArray {
@@ -87,6 +88,10 @@ struct CTrialArray {
 
 struct CAnalysis {
     let taskId: UnsafeMutablePointer<CChar>?
+}
+
+struct CArchive {
+    let archiveId: UnsafeMutablePointer<CChar>?
 }
 
 struct CVideo {
@@ -164,8 +169,14 @@ func model_health_free_video_array(_ array: CVideoArray)
 @_silgen_name("model_health_free_trial_result_array")
 func model_health_free_trial_result_array(_ array: CTrialResultArray)
 
+@_silgen_name("model_health_free_data")
+func model_health_free_data(_ item: CData)
+
 @_silgen_name("model_health_free_data_array")
 func model_health_free_data_array(_ array: CDataArray)
+
+@_silgen_name("model_health_free_archive")
+func model_health_free_archive(_ archive: CArchive)
 
 @_silgen_name("model_health_free_result_data_array")
 func model_health_free_result_data_array(_ array: CResultDataArray)
@@ -197,7 +208,7 @@ func model_health_trial_list_for_session(
 @_silgen_name("model_health_activities_for_subject")
 func model_health_activities_for_subject(
     _ handle: ModelHealthProviderHandle,
-    _ subjectId: UnsafePointer<CChar>,
+    _ subjectId: Int32,
     _ startIndex: Int32,
     _ count: Int32,
     _ sort: Int32,
@@ -259,6 +270,18 @@ func model_health_create_subject(
     _ result: UnsafeMutablePointer<CSubject>
 ) -> FFIResult
 
+@_silgen_name("model_health_configure_session")
+func model_health_configure_session(
+    _ handle: ModelHealthProviderHandle,
+    _ sessionId: UnsafePointer<CChar>,
+    _ framerate: Int32,
+    _ opensimModel: Int32,
+    _ scalingSetup: Int32,
+    _ coreEngine: Int32,
+    _ filterFrequency: Int32,
+    _ dataSharing: Int32
+) -> FFIResult
+
 // MARK: - Recording Operations
 
 @_silgen_name("model_health_start_recording")
@@ -266,6 +289,7 @@ func model_health_start_recording(
     _ handle: ModelHealthProviderHandle,
     _ trialName: UnsafePointer<CChar>,
     _ sessionId: UnsafePointer<CChar>,
+    _ activityType: Int32,
     _ result: UnsafeMutablePointer<CTrial>
 ) -> FFIResult
 
@@ -278,6 +302,10 @@ func model_health_stop_recording(
 // MARK: - Calibration Operations
 
 typealias CalibrationStatusCallback = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafePointer<CChar>?
+) -> Void
+
+typealias ImportStatusCallback = @convention(c) (
     UnsafeMutableRawPointer?, UnsafePointer<CChar>?
 ) -> Void
 
@@ -307,7 +335,7 @@ func model_health_calibrate_subject(
 @_silgen_name("model_health_start_analysis")
 func model_health_start_analysis(
     _ handle: ModelHealthProviderHandle,
-    _ analysisType: Int32,
+    _ activityType: Int32,
     _ trialId: UnsafePointer<CChar>,
     _ trialName: UnsafePointer<CChar>,
     _ sessionId: UnsafePointer<CChar>,
@@ -328,7 +356,8 @@ func model_health_activity_status(
     _ sessionId: UnsafePointer<CChar>,
     _ status: UnsafeMutablePointer<Int32>,
     _ uploaded: UnsafeMutablePointer<Int32>,
-    _ total: UnsafeMutablePointer<Int32>
+    _ total: UnsafeMutablePointer<Int32>,
+    _ analysisTask: UnsafeMutablePointer<CAnalysis>
 ) -> FFIResult
 
 @_silgen_name("model_health_download_trial_videos")
@@ -358,4 +387,46 @@ func model_health_download_trial_analysis_result_data(
     _ dataTypes: UnsafePointer<Int32>,
     _ dataTypeCount: Int,
     _ result: UnsafeMutablePointer<CAnalysisResultDataArray>
+) -> FFIResult
+
+// MARK: - Import Operations
+
+@_silgen_name("model_health_import_session")
+func model_health_import_session(
+    _ handle: ModelHealthProviderHandle,
+    _ activitiesJson: UnsafePointer<CChar>,
+    _ subjectId: Int32,
+    _ framerate: Int32,
+    _ opensimModel: Int32,
+    _ scalingSetup: Int32,
+    _ coreEngine: Int32,
+    _ filterFrequency: Int32,
+    _ dataSharing: Int32,
+    _ callback: ImportStatusCallback,
+    _ userData: UnsafeMutableRawPointer?,
+    _ result: UnsafeMutablePointer<CSession>
+) -> FFIResult
+
+// MARK: - Archive Operations
+
+@_silgen_name("model_health_prepare_archive")
+func model_health_prepare_archive(
+    _ handle: ModelHealthProviderHandle,
+    _ sessionId: UnsafePointer<CChar>,
+    _ withVideos: Int32,
+    _ result: UnsafeMutablePointer<CArchive>
+) -> FFIResult
+
+@_silgen_name("model_health_archive_status")
+func model_health_archive_status(
+    _ handle: ModelHealthProviderHandle,
+    _ archiveId: UnsafePointer<CChar>,
+    _ status: UnsafeMutablePointer<Int32>
+) -> FFIResult
+
+@_silgen_name("model_health_archive_data")
+func model_health_archive_data(
+    _ handle: ModelHealthProviderHandle,
+    _ archiveId: UnsafePointer<CChar>,
+    _ result: UnsafeMutablePointer<CData>
 ) -> FFIResult

@@ -114,7 +114,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
     }
 
     func activities(
-        forSubject subjectId: String,
+        forSubject subjectId: Int,
         startIndex: Int,
         count: Int,
         sortedBy sort: ActivitySort
@@ -123,16 +123,14 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             var cArray = CTrialArray(trials: nil, count: 0)
             let sortCode = activitySortToI32(sort)
 
-            let result = subjectId.withCString { subjectIdPtr in
-                model_health_activities_for_subject(
-                    handle,
-                    subjectIdPtr,
-                    Int32(startIndex),
-                    Int32(count),
-                    sortCode,
-                    &cArray
-                )
-            }
+            let result = model_health_activities_for_subject(
+                handle,
+                Int32(subjectId),
+                Int32(startIndex),
+                Int32(count),
+                sortCode,
+                &cArray
+            )
 
             defer {
                 model_health_free_trial_array(cArray)
@@ -166,7 +164,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 name: nil,
                 status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
-                results: CTrialResultArray(results: nil, count: 0)
+                results: CTrialResultArray(results: nil, count: 0),
+                activity_type: -1
             )
 
             let result = activityId.withCString { activityIdPtr in
@@ -196,7 +195,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 name: nil,
                 status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
-                results: CTrialResultArray(results: nil, count: 0)
+                results: CTrialResultArray(results: nil, count: 0),
+                activity_type: -1
             )
 
             let result = activity.id.withCString { activityIdPtr in
@@ -442,6 +442,29 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
+    func configure(session: Session, config: SessionConfig) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let result = session.id.withCString { sessionIdPtr in
+                model_health_configure_session(
+                    handle,
+                    sessionIdPtr,
+                    config.framerate.cValue,
+                    config.opensimModel.cValue,
+                    config.scalingSetup.cValue,
+                    config.coreEngine.cValue,
+                    config.filterFrequency.cValue,
+                    config.dataSharing.cValue
+                )
+            }
+
+            if result.success {
+                continuation.resume()
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
     func createSubject(parameters: SubjectParameters) async throws -> Subject {
         try await withCheckedThrowingContinuation { continuation in
             var cSubject = CSubject(
@@ -482,17 +505,19 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     // MARK: - Recording Operations
 
-    func startRecording(activityNamed name: String, in session: Session) async throws -> Activity {
+    func startRecording(activityNamed name: String, in session: Session, config: ActivityConfig? = nil) async throws -> Activity {
         try await withCheckedThrowingContinuation { continuation in
             var cTrial = CTrial(
                 id: nil, session: nil, name: nil, status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
-                results: CTrialResultArray(results: nil, count: 0)
+                results: CTrialResultArray(results: nil, count: 0),
+                activity_type: -1
             )
+            let cActivityType: Int32 = config?.activityType.cValue ?? -1
 
             let result = name.withCString { trialName in
                 session.id.withCString { sessionId in
-                    model_health_start_recording(handle, trialName, sessionId, &cTrial)
+                    model_health_start_recording(handle, trialName, sessionId, cActivityType, &cTrial)
                 }
             }
 
@@ -619,6 +644,72 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
+    // MARK: - Import Operations
+
+    func importSession(
+        _ activitiesJson: String,
+        subject: Subject,
+        config: SessionConfig,
+        statusUpdate: @escaping @Sendable (ImportStatus) -> Void
+    ) async throws -> Session {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Session, Error>) in
+            let context = CallbackContext(
+                statusUpdate: statusUpdate,
+                continuation: continuation
+            )
+            let contextPtr = Unmanaged.passRetained(context).toOpaque()
+
+            var cSession = CSession(
+                id: nil, name: nil, sessionName: nil,
+                user: 0, isPublic: false, qrcode: nil,
+                subject: 0, trialsCount: 0
+            )
+
+            let result: FFIResult = activitiesJson.withCString { activitiesJsonPtr in
+                model_health_import_session(
+                    handle,
+                    activitiesJsonPtr,
+                    Int32(subject.id),
+                    config.framerate.cValue,
+                    config.opensimModel.cValue,
+                    config.scalingSetup.cValue,
+                    config.coreEngine.cValue,
+                    config.filterFrequency.cValue,
+                    config.dataSharing.cValue,
+                    { userDataPtr, statusJsonPtr in
+                        guard let userDataPtr, let statusJsonPtr else { return }
+                        let ctx = Unmanaged<CallbackContext<ImportStatus>>
+                            .fromOpaque(userDataPtr).takeUnretainedValue()
+                        if let status = try? ImportStatus.from(
+                            jsonString: String(cString: statusJsonPtr)
+                        ) {
+                            ctx.statusUpdate(status)
+                        }
+                    },
+                    contextPtr,
+                    &cSession
+                )
+            }
+
+            Unmanaged<CallbackContext<ImportStatus>>.fromOpaque(contextPtr).release()
+
+            if result.success {
+                do {
+                    let completedSession = try Session.from(cSession: cSession)
+                    freeSessionFields(cSession)
+                    continuation.resume(returning: completedSession)
+                } catch {
+                    freeSessionFields(cSession)
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
     // MARK: - Analysis Operations
 
     func activityStatus(for activity: Activity) async throws -> ActivityStatus {
@@ -626,6 +717,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             var statusCode: Int32 = -1
             var uploaded: Int32 = 0
             var total: Int32 = 0
+            var cTask = CAnalysis(taskId: nil)
 
             let result = activity.id.withCString { trialId in
                 activity.session.withCString { sessionId in
@@ -635,7 +727,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                         sessionId,
                         &statusCode,
                         &uploaded,
-                        &total
+                        &total,
+                        &cTask
                     )
                 }
             }
@@ -644,17 +737,24 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 let status = ActivityStatus.from(
                     statusCode: statusCode,
                     uploaded: uploaded,
-                    total: total
+                    total: total,
+                    analysisTask: cTask
                 )
+                if let taskId = cTask.taskId {
+                    model_health_free_string(taskId)
+                }
                 continuation.resume(returning: status)
             } else {
+                if let taskId = cTask.taskId {
+                    model_health_free_string(taskId)
+                }
                 handleFFIError(result, continuation: continuation)
             }
         }
     }
 
     func startAnalysis(
-        _ analysisType: AnalysisType,
+        _ activityType: ActivityType,
         for trial: Activity,
         in session: Session
     ) async throws -> Analysis {
@@ -672,7 +772,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 session.id.withCString { sessionId in
                     model_health_start_analysis(
                         handle,
-                        analysisType.cValue,
+                        activityType.cValue,
                         trialId,
                         trialName,
                         sessionId,
@@ -718,6 +818,79 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     continuation.resume(
                         throwing: ModelHealthError.internalError(error.localizedDescription)
                     )
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
+    // MARK: - Archive Operations
+
+    func prepareArchive(for session: Session, withVideos: Bool) async throws -> Archive {
+        try await withCheckedThrowingContinuation { continuation in
+            var cArchive = CArchive(archiveId: nil)
+
+            let result = session.id.withCString { sessionId in
+                model_health_prepare_archive(handle, sessionId, withVideos ? 1 : 0, &cArchive)
+            }
+
+            if result.success {
+                do {
+                    let archive = try Archive.from(cArchive: cArchive)
+                    model_health_free_archive(cArchive)
+                    continuation.resume(returning: archive)
+                } catch {
+                    model_health_free_archive(cArchive)
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
+    func archiveStatus(for archive: Archive) async throws -> ArchiveStatus {
+        try await withCheckedThrowingContinuation { continuation in
+            var statusCode: Int32 = -1
+
+            let result = archive.id.withCString { archiveId in
+                model_health_archive_status(handle, archiveId, &statusCode)
+            }
+
+            if result.success {
+                do {
+                    let status = try ArchiveStatus.from(statusCode: statusCode)
+                    continuation.resume(returning: status)
+                } catch {
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
+    func archiveData(for archive: Archive) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            var cData = CData(data: nil, length: 0)
+
+            let result = archive.id.withCString { archiveId in
+                model_health_archive_data(handle, archiveId, &cData)
+            }
+
+            if result.success {
+                if let dataPtr = cData.data, cData.length > 0 {
+                    let data = Data(bytes: dataPtr, count: cData.length)
+                    model_health_free_data(cData)
+                    continuation.resume(returning: data)
+                } else {
+                    model_health_free_data(cData)
+                    continuation.resume(returning: Data())
                 }
             } else {
                 handleFFIError(result, continuation: continuation)

@@ -127,7 +127,8 @@ extension Activity {
             name: cTrial.name.map { String(cString: $0) },
             status: String(cString: status),
             videos: videos,
-            results: results
+            results: results,
+            activityType: ActivityType(cValue: cTrial.activity_type)
         )
     }
 }
@@ -160,7 +161,7 @@ extension Analysis {
 }
 
 extension ActivityStatus {
-    internal static func from(statusCode: Int32, uploaded: Int32, total: Int32) -> ActivityStatus
+    internal static func from(statusCode: Int32, uploaded: Int32, total: Int32, analysisTask: CAnalysis) -> ActivityStatus
     {
         switch statusCode {
         case 0:
@@ -173,6 +174,12 @@ extension ActivityStatus {
             return .ready
 
         case 3:
+            return .failed
+
+        case 4:
+            if let task = try? Analysis.from(cTask: analysisTask) {
+                return .analyzing(task)
+            }
             return .failed
 
         default:
@@ -195,6 +202,49 @@ extension AnalysisStatus {
 
         default:
             throw FFIConversionError.invalidData("Unknown analysis status code: \(statusCode)")
+        }
+    }
+}
+
+extension Archive {
+    internal static func from(cArchive: CArchive) throws -> Archive {
+        guard let archiveId = cArchive.archiveId else {
+            throw FFIConversionError.nullPointer("Archive ID is null")
+        }
+
+        return Archive(id: String(cString: archiveId))
+    }
+}
+
+extension ArchiveStatus {
+    internal static func from(statusCode: Int32) throws -> ArchiveStatus {
+        switch statusCode {
+        case 0:
+            return .processing
+
+        case 1:
+            return .ready
+
+        case 2:
+            return .failed
+
+        default:
+            throw FFIConversionError.invalidData("Unknown archive status code: \(statusCode)")
+        }
+    }
+}
+
+extension ImportStatus {
+    internal static func from(jsonString: String) throws -> ImportStatus {
+        guard let data = jsonString.data(using: .utf8) else {
+            throw FFIConversionError.invalidData("Failed to convert JSON string to data")
+        }
+
+        do {
+            let codable = try JSONDecoder().decode(CodableImportStatus.self, from: data)
+            return codable.toPublic()
+        } catch {
+            throw FFIConversionError.invalidData("Failed to decode ImportStatus: \(error)")
         }
     }
 }
@@ -321,7 +371,7 @@ extension CheckerboardPlacement {
     }
 }
 
-extension AnalysisType {
+extension ActivityType {
     var cValue: Int32 {
         switch self {
         case .counterMovementJump:
@@ -359,6 +409,49 @@ extension AnalysisType {
 
         case .cut:
             return 11
+        }
+    }
+
+    init?(cValue: Int32) {
+        switch cValue {
+        case 0:
+            self = .counterMovementJump
+
+        case 1:
+            self = .gait
+
+        case 2:
+            self = .treadmillRunning
+
+        case 3:
+            self = .sitToStand
+
+        case 4:
+            self = .squats
+
+        case 5:
+            self = .rangeOfMotion
+
+        case 6:
+            self = .overgroundRunning
+
+        case 7:
+            self = .dropJump
+
+        case 8:
+            self = .hop
+
+        case 9:
+            self = .treadmillGait
+
+        case 10:
+            self = .changeOfDirection
+
+        case 11:
+            self = .cut
+
+        default:
+            return nil
         }
     }
 }
@@ -443,7 +536,165 @@ extension AnalysisDataType {
     }
 }
 
+extension SessionFramerate {
+    var cValue: Int32 {
+        switch self {
+        case .fps60:
+            return 0
+
+        case .fps120:
+            return 1
+
+        case .fps240:
+            return 2
+        }
+    }
+}
+
+extension SessionOpenSimModel {
+    var cValue: Int32 {
+        switch self {
+        case .laiUhlrich2022Shoulder:
+            return 0
+
+        case .laiUhlrich2022:
+            return 1
+        }
+    }
+}
+
+extension SessionScalingSetup {
+    var cValue: Int32 {
+        switch self {
+        case .uprightStandingPose:
+            return 0
+
+        case .anyPose:
+            return 1
+        }
+    }
+}
+
+extension SessionCoreEngine {
+    var cValue: Int32 {
+        switch self {
+        case .v0_2:
+            return 0
+
+        case .v0_3:
+            return 1
+
+        case .v1_0:
+            return 2
+        }
+    }
+}
+
+extension FilterFrequency {
+    var cValue: Int32 {
+        switch self {
+        case .default:
+            return -1
+
+        case .hz(let n):
+            return Int32(n)
+        }
+    }
+}
+
+extension SessionDataSharing {
+    var cValue: Int32 {
+        switch self {
+        case .shareProcessedDataAndIdentifiedVideos:
+            return 0
+
+        case .shareProcessedDataAndDeidentifiedVideos:
+            return 1
+
+        case .shareProcessedData:
+            return 2
+
+        case .shareNoData:
+            return 3
+        }
+    }
+}
+
 // MARK: - Internal Codable Types for FFI Deserialization
+
+/// Decodes the externally-tagged serde JSON for `ImportStatus`.
+/// Unit variants serialize as plain strings; struct variants as `{"variant": {...}}`.
+private enum CodableImportStatus: Decodable {
+    case creatingSession
+    case createdSession(sessionId: String)
+    case uploadingVideo(trial: String, uploaded: Int, total: Int)
+    case processing
+
+    private enum VariantKeys: String, CodingKey {
+        case created_session
+        case uploading_video
+    }
+
+    private struct CreatedSessionPayload: Decodable {
+        let session_id: String
+    }
+
+    private struct UploadingPayload: Decodable {
+        let trial: String
+        let uploaded: Int
+        let total: Int
+    }
+
+    init(from decoder: Decoder) throws {
+        // Try single-value (unit variants serialised as plain strings)
+        if let single = try? decoder.singleValueContainer(),
+           let string = try? single.decode(String.self)
+        {
+            switch string {
+            case "creating_session":
+                self = .creatingSession
+                return
+
+            case "processing":
+                self = .processing
+                return
+
+            default:
+                break
+            }
+        }
+
+        // Try keyed container (struct variant: {"created_session": {...}} or {"uploading_video": {...}})
+        let container = try decoder.container(keyedBy: VariantKeys.self)
+        if container.contains(.created_session) {
+            let payload = try container.decode(CreatedSessionPayload.self, forKey: .created_session)
+            self = .createdSession(sessionId: payload.session_id)
+            return
+        }
+        if container.contains(.uploading_video) {
+            let payload = try container.decode(UploadingPayload.self, forKey: .uploading_video)
+            self = .uploadingVideo(trial: payload.trial, uploaded: payload.uploaded, total: payload.total)
+            return
+        }
+        throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unknown ImportStatus variant"))
+    }
+
+    func toPublic() -> ImportStatus {
+        switch self {
+        case .creatingSession:
+            return .creatingSession
+
+        case .createdSession(let sessionId):
+            return .createdSession(sessionId: sessionId)
+
+        case .uploadingVideo(let trial, let uploaded, let total):
+            return .uploadingVideo(trial: trial, uploaded: uploaded, total: total)
+
+        case .processing:
+            return .processing
+        }
+    }
+}
 
 private enum CodableCalibrationStatus: Codable {
     case recording
