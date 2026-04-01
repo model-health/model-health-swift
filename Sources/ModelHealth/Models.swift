@@ -658,10 +658,10 @@ public enum SessionCoreEngine: CaseIterable, Sendable {
     /// Version 0.2.
     case v0_2
 
-    /// Version 0.3 (default).
+    /// Version 0.3.
     case v0_3
 
-    /// Version 1.0. Currently in beta.
+    /// Version 1.0 (default).
     case v1_0
 }
 
@@ -724,7 +724,7 @@ public struct SessionConfig: Sendable {
     /// Pose used for subject scaling. Default: `.uprightStandingPose`.
     public var scalingSetup: SessionScalingSetup
 
-    /// Core processing engine version. Default: `.v0_3`.
+    /// Core processing engine version. Default: `.v1_0`.
     public var coreEngine: SessionCoreEngine
 
     /// Low-pass filter frequency. Default: `.default` (server-chosen).
@@ -737,7 +737,7 @@ public struct SessionConfig: Sendable {
         framerate: SessionFramerate = .fps120,
         opensimModel: SessionOpenSimModel = .laiUhlrich2022Shoulder,
         scalingSetup: SessionScalingSetup = .uprightStandingPose,
-        coreEngine: SessionCoreEngine = .v0_3,
+        coreEngine: SessionCoreEngine = .v1_0,
         filterFrequency: FilterFrequency = .default,
         dataSharing: SessionDataSharing = .shareProcessedDataAndIdentifiedVideos
     ) {
