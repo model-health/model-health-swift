@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "ModelHealth",
     platforms: [
-        .iOS(.v17),
+        .iOS(.v15),
         .macOS(.v14),
     ],
     products: [
@@ -16,8 +16,8 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "ModelHealthFFI",
-            url: "https://github.com/model-health/model-health-swift/releases/download/v0.4.2/ModelHealthFFI.xcframework.zip",
-            checksum: "827a6128cc7a3432792effb6f717ff36b9358a91dca7c49c7a7217415313f7ee"
+            url: "https://github.com/model-health/model-health-swift/releases/download/v0.4.3/ModelHealthFFI.xcframework.zip",
+            checksum: "5547b00c944e24749191443cebdd9692c3399724dde78b33651616f6989a5695"
         ),
         .target(
             name: "ModelHealth",
