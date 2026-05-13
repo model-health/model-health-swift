@@ -303,56 +303,180 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     func motionData(ofType types: Set<MotionDataType>, for trial: Activity) async -> [MotionData] {
         await withCheckedContinuation { continuation in
-            let typeCodes: [Int32] = types.map(\.cValue)
-
-            guard !typeCodes.isEmpty else {
+            guard !types.isEmpty else {
                 continuation.resume(returning: [])
                 return
             }
 
-            var cArray = CResultDataArray(items: nil, count: 0)
+            let standardTypes = types.filter {
+                if case .tagged = $0 {
+                    return false
+                }
+                return true
+            }
+            let taggedTypes: [(String, String)] = types.compactMap {
+                if case let .tagged(tag, fileExtension) = $0 { 
+                    return (tag, fileExtension)
+                }
+                return nil
+            }
+
+            var allResults: [MotionData] = []
+
+            if !standardTypes.isEmpty {
+                let typeCodes: [Int32] = standardTypes.map(\.cValue)
+                var cArray = CResultDataArray(items: nil, count: 0)
+
+                let result = trial.id.withCString { trialId in
+                    trial.session.withCString { sessionId in
+                        typeCodes.withUnsafeBufferPointer { buffer in
+                            guard let baseAddress = buffer.baseAddress else {
+                                return FFIResult(success: false, errorMessage: nil)
+                            }
+                            return model_health_download_trial_result_data(
+                                handle,
+                                trialId,
+                                sessionId,
+                                baseAddress,
+                                typeCodes.count,
+                                &cArray
+                            )
+                        }
+                    }
+                }
+
+                if result.success, cArray.count > 0, let itemsPtr = cArray.items {
+                    let fetched: [MotionData] = (0..<cArray.count).compactMap { i in
+                        let item = itemsPtr[i]
+                        guard
+                            let dataType = MotionDataType(cValue: item.dataType),
+                            let dataPtr = item.data,
+                            item.length > 0
+                        else {
+                            return nil
+                        }
+                        return MotionData(type: dataType, data: Data(bytes: dataPtr, count: item.length))
+                    }
+                    allResults.append(contentsOf: fetched)
+                }
+                model_health_free_result_data_array(cArray)
+            }
+
+            for (tag, fileExtension) in taggedTypes {
+                var cData = CData(data: nil, length: 0)
+
+                let result = trial.id.withCString { trialId in
+                    trial.session.withCString { sessionId in
+                        tag.withCString { tagPtr in
+                            model_health_download_tagged_result_data(
+                                handle,
+                                trialId,
+                                sessionId,
+                                tagPtr,
+                                &cData
+                            )
+                        }
+                    }
+                }
+
+                if result.success, cData.length > 0, let dataPtr = cData.data {
+                    let motionData = MotionData(
+                        type: .tagged(tag, fileExtension),
+                        data: Data(bytes: dataPtr, count: cData.length)
+                    )
+                    allResults.append(motionData)
+                }
+                model_health_free_data(cData)
+            }
+
+            continuation.resume(returning: allResults)
+        }
+    }
+
+    func addMotionData(
+        _ files: [ExternalResultFile],
+        to trial: Activity
+    ) async throws -> Activity {
+        try await withCheckedThrowingContinuation { continuation in
+            guard !files.isEmpty else {
+                continuation.resume(throwing: ModelHealthError.internalError("files array must not be empty"))
+                return
+            }
+
+            var dataPtrs: [UnsafeMutablePointer<UInt8>] = []
+            var tagPtrs: [UnsafeMutablePointer<CChar>] = []
+            var extPtrs: [UnsafeMutablePointer<CChar>] = []
+
+            defer {
+                dataPtrs.forEach { $0.deallocate() }
+                tagPtrs.forEach { $0.deallocate() }
+                extPtrs.forEach { $0.deallocate() }
+            }
+
+            let cFiles: [CExternalResultFile] = files.map { file in
+                let dataPtr = UnsafeMutablePointer<UInt8>.allocate(capacity: file.data.count)
+                file.data.copyBytes(to: dataPtr, count: file.data.count)
+                dataPtrs.append(dataPtr)
+
+                let tagCString = file.tag.utf8CString
+                let tagPtr = UnsafeMutablePointer<CChar>.allocate(capacity: tagCString.count)
+                tagCString.withUnsafeBufferPointer { buf in
+                    tagPtr.initialize(from: buf.baseAddress!, count: tagCString.count)
+                }
+                tagPtrs.append(tagPtr)
+
+                let extCString = file.fileExtension.utf8CString
+                let extPtr = UnsafeMutablePointer<CChar>.allocate(capacity: extCString.count)
+                extCString.withUnsafeBufferPointer { buf in
+                    extPtr.initialize(from: buf.baseAddress!, count: extCString.count)
+                }
+                extPtrs.append(extPtr)
+
+                return CExternalResultFile(
+                    dataType: -1,
+                    tag: UnsafePointer(tagPtr),
+                    fileExtension: UnsafePointer(extPtr),
+                    data: UnsafePointer(dataPtr),
+                    dataLen: file.data.count
+                )
+            }
+
+            var cTrial = CTrial(
+                id: nil, session: nil, name: nil, status: nil,
+                videos: CVideoArray(videos: nil, count: 0),
+                results: CTrialResultArray(results: nil, count: 0),
+                activity_type: -1
+            )
 
             let result = trial.id.withCString { trialId in
                 trial.session.withCString { sessionId in
-                    typeCodes.withUnsafeBufferPointer { buffer in
-                        guard let baseAddress = buffer.baseAddress else {
-                            return FFIResult(success: false, errorMessage: nil)
-                        }
-                        return model_health_download_trial_result_data(
+                    cFiles.withUnsafeBufferPointer { buffer in
+                        model_health_add_motion_data_to_activity(
                             handle,
                             trialId,
                             sessionId,
-                            baseAddress,
-                            typeCodes.count,
-                            &cArray
+                            buffer.baseAddress!,
+                            cFiles.count,
+                            &cTrial
                         )
                     }
                 }
             }
 
             defer {
-                model_health_free_result_data_array(cArray)
+                freeTrialFields(cTrial)
             }
 
-            guard result.success, cArray.count > 0, let itemsPtr = cArray.items else {
-                continuation.resume(returning: [])
-                return
-            }
-
-            let results: [MotionData] = (0..<cArray.count).compactMap { i in
-                let item = itemsPtr[i]
-                guard
-                    let dataType = MotionDataType(cValue: item.dataType),
-                    let dataPtr = item.data,
-                    item.length > 0
-                else {
-                    return nil
+            if result.success {
+                do {
+                    let activity = try Activity.from(cTrial: cTrial)
+                    continuation.resume(returning: activity)
+                } catch {
+                    continuation.resume(throwing: error)
                 }
-
-                return MotionData(type: dataType, data: Data(bytes: dataPtr, count: item.length))
+            } else {
+                handleFFIError(result, continuation: continuation)
             }
-
-            continuation.resume(returning: results)
         }
     }
 
@@ -677,7 +801,9 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     config.filterFrequency.cValue,
                     config.dataSharing.cValue,
                     { userDataPtr, statusJsonPtr in
-                        guard let userDataPtr, let statusJsonPtr else { return }
+                        guard let userDataPtr, let statusJsonPtr else { 
+                            return
+                        }
                         let ctx = Unmanaged<CallbackContext<ImportStatus>>
                             .fromOpaque(userDataPtr).takeUnretainedValue()
                         if let status = try? ImportStatus.from(

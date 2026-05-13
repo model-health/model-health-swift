@@ -265,6 +265,13 @@ public enum MotionDataType: Hashable, Sendable {
     /// (**Only available in neutral activities**)
     case model
 
+    /// An arbitrary tagged external file attached to an activity via
+    /// ``ModelHealthService/addMotionData(_:to:)``.
+    ///
+    /// - Parameter tag: The tag string used when the file was uploaded.
+    /// - Parameter fileExtension: Bare file extension without a leading dot (e.g. `"csv"`, `"bin"`).
+    case tagged(String, String)
+
     /// Available file formats for kinematics result data.
     public enum KinematicsFormat: Sendable {
         /// OpenSim motion (.mot) format.
@@ -283,6 +290,57 @@ public enum MotionDataType: Hashable, Sendable {
         case csv
     }
 }
+
+/// An external file to attach to an activity via ``ModelHealthService/addMotionData(_:to:)``.
+///
+/// ```swift
+/// let csv = ExternalResultFile(tag: "acme-group-external-data", fileExtension: "csv", data: csvBytes)
+/// let activity = try await service.addMotionData([csv], for: activity)
+/// ```
+public struct ExternalResultFile: Sendable {
+    /// Identifies the data source.
+    public let tag: String
+
+    /// Bare file extension without a leading dot (e.g. `"csv"`, `"bin"`, `"json"`).
+    public let fileExtension: String
+
+    /// Raw file bytes.
+    public let data: Data
+
+    /// Create an external file to attach to an activity.
+    ///
+    /// - Parameters:
+    ///   - tag: Identifies the data source (e.g. `"acme-group-external-data"`).
+    ///   - fileExtension: Bare file extension without a leading dot (e.g. `"csv"`, `"bin"`).
+    ///   - data: Raw file bytes.
+    public init(tag: String, fileExtension: String, data: Data) {
+        self.tag = tag
+        self.fileExtension = fileExtension
+        self.data = data
+    }
+}
+
+#if DEBUG
+extension ExternalResultFile {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var tag: String = "preview"
+        public var fileExtension: String = "bin"
+        public var data: Data = Data(repeating: 0, count: 8)
+
+        public func build() -> ExternalResultFile {
+            ExternalResultFile(tag: tag, fileExtension: fileExtension, data: data)
+        }
+    }
+}
+#endif
 
 /// Motion data downloaded from a processed activity.
 ///

@@ -146,6 +146,18 @@ struct CResultDataArray {
 ///   0 = Metrics (JSON), 1 = Data (CSV), 2 = Report (PDF)
 typealias CAnalysisResultDataArray = CResultDataArray
 
+/// Mirrors `CExternalResultFile` in the Rust FFI layer.
+///
+/// Set `dataType` to `-1` and provide a non-null `tag` for tagged files.
+/// `fileExtension` is a bare extension without a leading dot (e.g. `"csv"`, `"bin"`).
+struct CExternalResultFile {
+    let dataType: Int32
+    let tag: UnsafePointer<CChar>?
+    let fileExtension: UnsafePointer<CChar>?
+    let data: UnsafePointer<UInt8>?
+    let dataLen: Int
+}
+
 // MARK: - Free Functions
 
 @_silgen_name("model_health_free_session_array")
@@ -428,5 +440,26 @@ func model_health_archive_status(
 func model_health_archive_data(
     _ handle: ModelHealthProviderHandle,
     _ archiveId: UnsafePointer<CChar>,
+    _ result: UnsafeMutablePointer<CData>
+) -> FFIResult
+
+// MARK: - External Data Operations
+
+@_silgen_name("model_health_add_motion_data_to_activity")
+func model_health_add_motion_data_to_activity(
+    _ handle: ModelHealthProviderHandle,
+    _ trialId: UnsafePointer<CChar>,
+    _ sessionId: UnsafePointer<CChar>,
+    _ files: UnsafePointer<CExternalResultFile>,
+    _ count: Int,
+    _ result: UnsafeMutablePointer<CTrial>
+) -> FFIResult
+
+@_silgen_name("model_health_download_tagged_result_data")
+func model_health_download_tagged_result_data(
+    _ handle: ModelHealthProviderHandle,
+    _ trialId: UnsafePointer<CChar>,
+    _ sessionId: UnsafePointer<CChar>,
+    _ tag: UnsafePointer<CChar>,
     _ result: UnsafeMutablePointer<CData>
 ) -> FFIResult

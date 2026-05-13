@@ -212,6 +212,17 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         await serviceProvider.motionData(ofType: types, for: activity)
     }
 
+    /// Attaches external files to an activity and returns a refreshed ``Activity``.
+    ///
+    /// - Parameters:
+    ///   - files: The external files to attach. Each must be `.tagged(_:_:)`.
+    ///   - activity: The activity to attach the files to.
+    /// - Returns: The refreshed ``Activity`` containing the newly created ``ActivityResult`` entries.
+    /// - Throws: ``ModelHealthError`` if any upload fails or the server is unreachable.
+    public func addMotionData(_ files: [ExternalResultFile], to activity: Activity) async throws -> Activity {
+        try await serviceProvider.addMotionData(files, to: activity)
+    }
+
     /// Downloads result data for an activity with a completed analysis.
     ///
     /// Use this after ``analysisStatus(for:)`` returns `.completed` to retrieve metrics,
@@ -804,6 +815,9 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthService/motionData(ofType:for:)``
     func motionData(ofType types: Set<MotionDataType>, for activity: Activity) async -> [MotionData]
+
+    /// See ``ModelHealthService/addMotionData(_:to:)``
+    func addMotionData(_ files: [ExternalResultFile], to activity: Activity) async throws -> Activity
 
     /// See ``ModelHealthService/analysisData(ofType:for:)``
     func analysisData(

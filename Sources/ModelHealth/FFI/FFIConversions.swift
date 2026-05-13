@@ -476,6 +476,9 @@ extension MotionDataType {
 
         case .model:
             return 5
+
+        case .tagged:
+            return -1
         }
     }
 
