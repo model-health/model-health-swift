@@ -215,7 +215,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// Attaches external files to an activity and returns a refreshed ``Activity``.
     ///
     /// - Parameters:
-    ///   - files: The external files to attach. Each must be `.tagged(_:_:)`.
+    ///   - files: The external files to attach, with tag, file extension and data.
     ///   - activity: The activity to attach the files to.
     /// - Returns: The refreshed ``Activity`` containing the newly created ``ActivityResult`` entries.
     /// - Throws: ``ModelHealthError`` if any upload fails or the server is unreachable.
