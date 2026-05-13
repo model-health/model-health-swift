@@ -37,7 +37,7 @@ let sessions = try await service.getSessions()
 
 ## Documentation
 
-Full API Documentation: [docs.modelhealth.io](https://sdk.modelhealth.io)
+Full API Documentation: [sdk.modelhealth.io](https://sdk.modelhealth.io)
 
 ## Other SDKs
 
