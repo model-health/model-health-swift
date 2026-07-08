@@ -202,6 +202,8 @@ public struct Activity: Sendable {
     public let results: [Result]
     /// The activity type associated with this recording, if one was set.
     public let activityType: ActivityType?
+    /// Tags applied to this activity.
+    public let tags: [String]
 }
 
 /// Sort order for activity lists.
@@ -550,6 +552,32 @@ public enum ActivityType: String, CaseIterable, Sendable {
 
     /// Cutting Maneuver.
     case cut = "Cutting Maneuver"
+
+    /// Sprint.
+    case sprint = "Sprint"
+
+    /// Lateral Stepdown.
+    case lateralStepdown = "Lateral Stepdown"
+
+    /// Lunge.
+    case lunge = "Lunge"
+}
+
+/// Per-recording settings that override the session-level config.
+///
+/// Fields left as `nil` fall back to the session's configured values.
+public struct RecordingConfig: Sendable {
+
+    /// Camera frame rate override. `nil` uses the session default.
+    public var framerate: SessionFramerate?
+
+    /// Low-pass filter frequency override. `nil` uses the session default.
+    public var filterFrequency: FilterFrequency?
+
+    public init(framerate: SessionFramerate? = nil, filterFrequency: FilterFrequency? = nil) {
+        self.framerate = framerate
+        self.filterFrequency = filterFrequency
+    }
 }
 
 /// Configuration for starting a recording.
@@ -558,10 +586,26 @@ public struct ActivityConfig: Sendable {
     /// The activity type to associate with this recording.
     ///
     /// When set, the corresponding analysis starts automatically once the recording is processed.
-    public let activityType: ActivityType
+    public let activityType: ActivityType?
 
-    public init(activityType: ActivityType) {
+    /// Per-recording settings that override the session-level config.
+    public let config: RecordingConfig?
+
+    /// Tags to add to the activity. Merged with existing tags.
+    public let addTags: [String]
+
+    /// Tags to remove from the activity.
+    public let removeTags: [String]
+
+    /// New display name to set on the activity.
+    public let name: String?
+
+    public init(activityType: ActivityType? = nil, config: RecordingConfig? = nil, addTags: [String] = [], removeTags: [String] = [], name: String? = nil) {
         self.activityType = activityType
+        self.config = config
+        self.addTags = addTags
+        self.removeTags = removeTags
+        self.name = name
     }
 }
 
@@ -811,6 +855,92 @@ public struct SessionConfig: Sendable {
     public static let `default` = SessionConfig()
 }
 
+// MARK: - Metrics
+
+/// The measured value(s) for a metric.
+public enum MetricValue: Sendable, Encodable {
+    /// A single measurement, or `nil` if not yet computed.
+    case scalar(Double?)
+
+    /// Independent left and right measurements.
+    case bilateral(left: Double?, right: Double?)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case value
+        case left
+        case right
+    }
+
+    /// Encodes to the same tagged shape used by the rest of the SDK's JSON
+    /// export (`{"type": "scalar", "value": ...}` / `{"type": "bilateral", ...}`).
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .scalar(let value):
+            try container.encode("scalar", forKey: .type)
+            try container.encode(value, forKey: .value)
+
+        case .bilateral(let left, let right):
+            try container.encode("bilateral", forKey: .type)
+            try container.encode(left, forKey: .left)
+            try container.encode(right, forKey: .right)
+        }
+    }
+}
+
+/// A single computed metric with its value(s) and metadata.
+public struct Metric: Sendable, Encodable {
+    public let name: String
+    public let description: String?
+    public let value: MetricValue
+}
+
+/// A named category of related metric values.
+public struct MetricsGroup: Sendable, Encodable {
+    public let name: String
+    public let description: String?
+    public let metrics: [Metric]
+}
+
+/// Metric values for a single activity, organised into groups.
+///
+/// Retrieve via ``ModelHealthService/activityMetrics(for:)`` or
+/// ``ModelHealthService/subjectMetrics(forSubject:start:end:)``.
+///
+/// ```swift
+/// let metrics = try await service.activityMetrics(for: "activity-uuid")
+/// for group in metrics.groups {
+///     for m in group.metrics {
+///         print("\(m.name): \(m.value ?? 0.0)")
+///     }
+/// }
+/// ```
+public struct ActivityMetrics: Sendable, Encodable {
+    public let activityId: String
+    public let activityTypeId: Int
+    public let groups: [MetricsGroup]
+
+    private enum CodingKeys: String, CodingKey {
+        case activityId = "activity_id"
+        case activityTypeId = "activity_type_id"
+        case groups
+    }
+}
+
+extension ActivityMetrics {
+    /// Serialises these metrics to a JSON string (snake_case keys, matching the wire format).
+    public func jsonString(prettyPrinted: Bool = true) throws -> String {
+        let encoder = JSONEncoder()
+        if prettyPrinted {
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        }
+        let data = try encoder.encode(self)
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
 // MARK: - SwiftUI #Preview support
 
 extension Session {
@@ -929,6 +1059,7 @@ extension Activity {
         public var videos: [Video] = []
         public var results: [Activity.Result] = []
         public var activityType: ActivityType? = nil
+        public var tags: [String] = []
 
         func build() -> Activity {
             Activity(
@@ -938,7 +1069,8 @@ extension Activity {
                 status: status,
                 videos: videos,
                 results: results,
-                activityType: activityType
+                activityType: activityType,
+                tags: tags
             )
         }
     }
@@ -1054,6 +1186,70 @@ extension Archive {
 
         func build() -> Archive {
             Archive(id: archiveId)
+        }
+    }
+}
+
+extension Metric {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var name = "Peak Force"
+        public var description: String? = "Maximum ground reaction force"
+        public var value: MetricValue = .scalar(87.5)
+
+        func build() -> Metric {
+            Metric(
+                name: name,
+                description: description,
+                value: value
+            )
+        }
+    }
+}
+
+extension MetricsGroup {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var name = "Force"
+        public var description: String? = "Ground reaction force metrics"
+        public var metrics: [Metric] = [Metric.forPreview()]
+
+        func build() -> MetricsGroup {
+            MetricsGroup(name: name, description: description, metrics: metrics)
+        }
+    }
+}
+
+extension ActivityMetrics {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var activityId = "preview-activity"
+        public var activityTypeId = 0
+        public var groups: [MetricsGroup] = [MetricsGroup.forPreview()]
+
+        func build() -> ActivityMetrics {
+            ActivityMetrics(activityId: activityId, activityTypeId: activityTypeId, groups: groups)
         }
     }
 }

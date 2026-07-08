@@ -137,6 +137,23 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         try await serviceProvider.sessionList()
     }
 
+    /// Retrieves a specific session by ID with its populated activities.
+    ///
+    /// Use this to fetch a known session directly — for example, a public demo session
+    /// or one whose ID was stored previously.
+    ///
+    /// ```swift
+    /// let session = try await service.getSession(id: "1f32961c-d2b5-4aae-bc23-3f3db6b31540")
+    /// print("Activities: \(session.trialsCount)")
+    /// ```
+    ///
+    /// - Parameter sessionId: The unique identifier of the session.
+    /// - Returns: The ``Session`` with its populated activity list.
+    /// - Throws: A ``ModelHealthError`` if the session doesn't exist or the request fails.
+    public func getSession(id sessionId: String) async throws -> Session {
+        try await serviceProvider.getSession(id: sessionId)
+    }
+
     /// Retrieves all movement activities associated with a session.
     ///
     /// Activities represent individual recording trials and contain references to
@@ -348,11 +365,18 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// let updated = try await service.update(activity: activity)
     /// ```
     ///
+    /// Pass a ``ActivityConfig`` to apply per-activity settings such as tags:
+    ///
+    /// ```swift
+    /// let updated = try await service.update(activity: activity, config: ActivityConfig(tags: ["cmj", "baseline"]))
+    /// ```
+    ///
     /// - Parameter activity: The activity to update, with modified properties.
+    /// - Parameter config: Optional config to apply alongside the update (e.g. tags).
     /// - Returns: The updated ``Activity`` as stored on the server.
     /// - Throws: A ``ModelHealthError`` if the update fails or the request fails.
-    public func update(activity: Activity) async throws -> Activity {
-        try await serviceProvider.update(activity: activity)
+    public func update(activity: Activity, config: ActivityConfig? = nil) async throws -> Activity {
+        try await serviceProvider.update(activity: activity, config: config)
     }
 
     /// Deletes an activity.
@@ -543,7 +567,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Parameters:
     ///   - name: A descriptive name for this activity (e.g., `"cmj"`, `"squat"`).
     ///   - session: The session this activity is associated with.
-    ///   - config: Optional recording configuration.
+    ///   - config: Optional recording configuration. Pass a ``RecordingConfig`` inside ``ActivityConfig/config`` to override the session-level framerate or filter frequency for this recording only.
     /// - Returns: The newly created ``Activity``.
     /// - Throws: A ``ModelHealthError`` if recording cannot start (e.g., missing calibration).
     public func startRecording(activityNamed name: String, in session: Session, config: ActivityConfig? = nil) async throws -> Activity {
@@ -773,6 +797,53 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     public func archiveData(for archive: Archive) async throws -> Data {
         try await serviceProvider.archiveData(for: archive)
     }
+
+    // MARK: - Metrics
+
+    /// Returns metric values for a single activity.
+    ///
+    /// Fetches the full set of biomechanical metric values computed for the given activity,
+    /// organised into groups.
+    ///
+    /// ```swift
+    /// let metrics = try await service.activityMetrics(for: "activity-uuid")
+    /// for group in metrics.groups {
+    ///     for m in group.metrics {
+    ///         print("\(m.name): \(m.value ?? 0.0)")
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Parameter activityId: UUID of the activity.
+    /// - Returns: An ``ActivityMetrics`` containing all metric groups and computed values,
+    ///   or `nil` if the activity has not been analysed yet.
+    /// - Throws: A ``ModelHealthError`` on authentication failure or network error.
+    public func activityMetrics(for activityId: String) async throws -> ActivityMetrics? {
+        try await serviceProvider.activityMetrics(for: activityId)
+    }
+
+    /// Returns metric values for all of a subject's activities.
+    ///
+    /// Fetches metric values across every activity belonging to the subject, optionally
+    /// filtered to a date range.
+    ///
+    /// ```swift
+    /// let allMetrics = try await service.subjectMetrics(forSubject: 42, start: Date(), end: Date())
+    /// for activityMetrics in allMetrics {
+    ///     print(activityMetrics.activityId)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - subjectId: Numeric ID of the subject.
+    ///   - start: Optional inclusive start date for the range.
+    ///   - end: Optional inclusive end date for the range.
+    /// - Returns: A list of ``ActivityMetrics``, one per activity.
+    /// - Throws: ``ModelHealthError/notFound`` if the subject does not exist.
+    /// - Throws: A ``ModelHealthError`` on authentication failure or network error.
+    public func subjectMetrics(forSubject subjectId: Int, start: Date? = nil, end: Date? = nil) async throws -> [ActivityMetrics] {
+        try await serviceProvider.subjectMetrics(forSubject: subjectId, start: start, end: end)
+    }
 }
 
 /// Defines ModelHealth SDK operations for dependency injection and testing.
@@ -783,6 +854,9 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
 public protocol ModelHealthProvider {
     /// See ``ModelHealthService/sessionList()``
     func sessionList() async throws -> [Session]
+
+    /// See ``ModelHealthService/getSession(id:)``
+    func getSession(id sessionId: String) async throws -> Session
 
     /// See ``ModelHealthService/subjectList()``
     func subjectList() async throws -> [Subject]
@@ -798,8 +872,8 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/fetch(activity:)``
     func fetch(activity activityId: String) async throws -> Activity
 
-    /// See ``ModelHealthService/update(activity:)``
-    func update(activity: Activity) async throws -> Activity
+    /// See ``ModelHealthService/update(activity:config:)``
+    func update(activity: Activity, config: ActivityConfig?) async throws -> Activity
 
     /// See ``ModelHealthService/delete(activity:)``
     func delete(activity: Activity) async throws
@@ -883,6 +957,12 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthService/archiveData(for:)``
     func archiveData(for archive: Archive) async throws -> Data
+
+    /// See ``ModelHealthService/activityMetrics(for:)``
+    func activityMetrics(for activityId: String) async throws -> ActivityMetrics?
+
+    /// See ``ModelHealthService/subjectMetrics(forSubject:start:end:)``
+    func subjectMetrics(forSubject subjectId: Int, start: Date?, end: Date?) async throws -> [ActivityMetrics]
 }
 
 /// Errors thrown by ``ModelHealthService``.
@@ -927,4 +1007,7 @@ public enum ModelHealthError: Error, Sendable {
 
     /// An error related to data file parsing & converting
     case dataFile(ConversionError)
+
+    /// The requested operation is not supported by this service configuration
+    case notSupported
 }

@@ -1,4 +1,5 @@
 import Foundation
+import ModelHealthFFI
 
 // MARK: - Internal FFI to Model Conversions
 
@@ -17,20 +18,20 @@ extension Session {
             throw FFIConversionError.nullPointer("Session name is null")
         }
 
-        guard let sessionName = cSession.sessionName else {
+        guard let sessionName = cSession.session_name else {
             throw FFIConversionError.nullPointer("Session sessionName is null")
         }
 
         return Session(
             id: String(cString: id),
             user: Int(cSession.user),
-            public: cSession.isPublic,
+            public: cSession.is_public,
             name: String(cString: name),
             sessionName: String(cString: sessionName),
             qrcode: cSession.qrcode.map { String(cString: $0) },
             activities: [],
             subject: cSession.subject == -1 ? nil : Int(cSession.subject),
-            activitiesCount: Int(cSession.trialsCount)
+            activitiesCount: Int(cSession.trials_count)
         )
     }
 }
@@ -51,9 +52,9 @@ extension Subject {
             weight: cSubject.weight == 0.0 ? nil : cSubject.weight,
             height: cSubject.height == 0.0 ? nil : cSubject.height,
             age: cSubject.age == -1 ? nil : Int(cSubject.age),
-            birthYear: cSubject.birthYear == 0 ? nil : Int(cSubject.birthYear),
+            birthYear: cSubject.birth_year == 0 ? nil : Int(cSubject.birth_year),
             gender: genderFromI32(cSubject.gender),
-            sexAtBirth: sexFromI32(cSubject.sexAtBirth),
+            sexAtBirth: sexFromI32(cSubject.sex_at_birth),
             characteristics: String(cString: characteristics)
         )
     }
@@ -73,7 +74,7 @@ extension Video {
             id: String(cString: id),
             activity: String(cString: trial),
             video: cVideo.video.map { String(cString: $0) },
-            videoThumb: cVideo.videoThumb.map { String(cString: $0) }
+            videoThumb: cVideo.video_thumb.map { String(cString: $0) }
         )
     }
 }
@@ -109,16 +110,24 @@ extension Activity {
 
         var videos: [Video] = []
         if cTrial.videos.count > 0, let videosPtr = cTrial.videos.videos {
-            videos = try (0..<cTrial.videos.count).map { i in
+            videos = try (0..<Int(cTrial.videos.count)).map { i in
                 try Video.from(cVideo: videosPtr[i])
             }
         }
 
         var results: [Activity.Result] = []
         if cTrial.results.count > 0, let resultsPtr = cTrial.results.results {
-            results = try (0..<cTrial.results.count).map { i in
+            results = try (0..<Int(cTrial.results.count)).map { i in
                 try Activity.Result.from(cResult: resultsPtr[i])
             }
+        }
+
+        let tags: [String]
+        if let tagsPtr = cTrial.tags {
+            let json = String(cString: tagsPtr)
+            tags = (try? JSONDecoder().decode([String].self, from: Data(json.utf8))) ?? []
+        } else {
+            tags = []
         }
 
         return Activity(
@@ -128,7 +137,8 @@ extension Activity {
             status: String(cString: status),
             videos: videos,
             results: results,
-            activityType: ActivityType(cValue: cTrial.activity_type)
+            activityType: ActivityType(cValue: cTrial.activity_type),
+            tags: tags
         )
     }
 }
@@ -152,7 +162,7 @@ extension ActivityTag {
 
 extension Analysis {
     internal static func from(cTask: CAnalysis) throws -> Analysis {
-        guard let taskId = cTask.taskId else {
+        guard let taskId = cTask.task_id else {
             throw FFIConversionError.nullPointer("Analysis task ID is null")
         }
 
@@ -208,7 +218,7 @@ extension AnalysisStatus {
 
 extension Archive {
     internal static func from(cArchive: CArchive) throws -> Archive {
-        guard let archiveId = cArchive.archiveId else {
+        guard let archiveId = cArchive.archive_id else {
             throw FFIConversionError.nullPointer("Archive ID is null")
         }
 
@@ -409,6 +419,15 @@ extension ActivityType {
 
         case .cut:
             return 11
+
+        case .sprint:
+            return 12
+
+        case .lateralStepdown:
+            return 13
+
+        case .lunge:
+            return 14
         }
     }
 
@@ -449,6 +468,15 @@ extension ActivityType {
 
         case 11:
             self = .cut
+
+        case 12:
+            self = .sprint
+
+        case 13:
+            self = .lateralStepdown
+
+        case 14:
+            self = .lunge
 
         default:
             return nil
@@ -778,5 +806,74 @@ private enum CodableCalibrationStatus: Codable {
         case .done:
             return .done
         }
+    }
+}
+
+// MARK: - Metrics Conversions
+
+extension Metric {
+    internal static func from(cValue: CMetric) throws -> Metric {
+        let name = cValue.name.map { String(cString: $0) } ?? ""
+
+        let reading: MetricValue
+        switch cValue.reading_type {
+        case 0:
+            reading = .scalar(cValue.has_value ? cValue.value : nil)
+
+        case 1:
+            reading = .bilateral(
+                left: cValue.has_value_left ? cValue.value_left : nil,
+                right: cValue.has_value_right ? cValue.value_right : nil
+            )
+
+        default:
+            throw FFIConversionError.invalidData("Unknown MetricValue type \(cValue.reading_type)")
+        }
+
+        return Metric(
+            name: name,
+            description: cValue.description.map { String(cString: $0) },
+            value: reading
+        )
+    }
+}
+
+extension MetricsGroup {
+    internal static func from(cGroup: CMetricsGroup) throws -> MetricsGroup {
+        let name = cGroup.name.map { String(cString: $0) } ?? ""
+
+        var metrics: [Metric] = []
+        if cGroup.metrics.count > 0, let itemsPtr = cGroup.metrics.items {
+            metrics = try (0..<Int(cGroup.metrics.count)).map { i in
+                try Metric.from(cValue: itemsPtr[i])
+            }
+        }
+
+        return MetricsGroup(
+            name: name,
+            description: cGroup.description.map { String(cString: $0) },
+            metrics: metrics
+        )
+    }
+}
+
+extension ActivityMetrics {
+    internal static func from(cMetrics: CActivityMetrics) throws -> ActivityMetrics {
+        guard let activityIdPtr = cMetrics.activity_id else {
+            throw FFIConversionError.nullPointer("ActivityMetrics activity_id is null")
+        }
+
+        var groups: [MetricsGroup] = []
+        if cMetrics.groups.count > 0, let itemsPtr = cMetrics.groups.items {
+            groups = try (0..<Int(cMetrics.groups.count)).map { i in
+                try MetricsGroup.from(cGroup: itemsPtr[i])
+            }
+        }
+
+        return ActivityMetrics(
+            activityId: String(cString: activityIdPtr),
+            activityTypeId: Int(cMetrics.activity_type_id),
+            groups: groups
+        )
     }
 }

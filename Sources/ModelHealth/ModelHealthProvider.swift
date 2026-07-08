@@ -1,8 +1,16 @@
 import Foundation
+import ModelHealthFFI
+
+private let metricDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+}()
 
 /// Internal implementation of ModelHealthProvider using Rust FFI
 internal final class ModelHealthProviderImpl: ModelHealthProvider {
-    private let handle: OpaquePointer
+    private let handle: UnsafeMutablePointer<ModelHealthProviderHandle>
 
     /// Creates a new provider with the given API key
     /// - Parameter apiKey: The API key for authentication
@@ -37,12 +45,41 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 do {
                     var sessions: [Session] = []
                     if cArray.count > 0, let sessionsPtr = cArray.sessions {
-                        sessions = try (0..<cArray.count).map { i in
+                        sessions = try (0..<Int(cArray.count)).map { i in
                             try Session.from(cSession: sessionsPtr[i])
                         }
                     }
                     continuation.resume(returning: sessions)
                 } catch {
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
+    func getSession(id sessionId: String) async throws -> Session {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSession = CSession(
+                id: nil, name: nil, session_name: nil,
+                user: 0, is_public: false, qrcode: nil,
+                subject: 0, trials_count: 0
+            )
+
+            let result = sessionId.withCString { sessionIdPtr in
+                model_health_get_session(handle, sessionIdPtr, &cSession)
+            }
+
+            if result.success {
+                do {
+                    let session = try Session.from(cSession: cSession)
+                    freeSessionFields(cSession)
+                    continuation.resume(returning: session)
+                } catch {
+                    freeSessionFields(cSession)
                     continuation.resume(
                         throwing: ModelHealthError.internalError(error.localizedDescription)
                     )
@@ -66,7 +103,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 do {
                     var subjects: [Subject] = []
                     if cArray.count > 0, let subjectsPtr = cArray.subjects {
-                        subjects = try (0..<cArray.count).map { i in
+                        subjects = try (0..<Int(cArray.count)).map { i in
                             try Subject.from(cSubject: subjectsPtr[i])
                         }
                     }
@@ -97,7 +134,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 do {
                     var trials: [Activity] = []
                     if cArray.count > 0, let trialsPtr = cArray.trials {
-                        trials = try (0..<cArray.count).map { i in
+                        trials = try (0..<Int(cArray.count)).map { i in
                             try Activity.from(cTrial: trialsPtr[i])
                         }
                     }
@@ -126,8 +163,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             let result = model_health_activities_for_subject(
                 handle,
                 Int32(subjectId),
-                Int32(startIndex),
-                Int32(count),
+                UInt32(startIndex),
+                UInt32(count),
                 sortCode,
                 &cArray
             )
@@ -140,7 +177,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 do {
                     var activities: [Activity] = []
                     if cArray.count > 0, let trialsPtr = cArray.trials {
-                        activities = try (0..<cArray.count).map { i in
+                        activities = try (0..<Int(cArray.count)).map { i in
                             try Activity.from(cTrial: trialsPtr[i])
                         }
                     }
@@ -165,7 +202,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
-                activity_type: -1
+                activity_type: -1,
+                tags: nil
             )
 
             let result = activityId.withCString { activityIdPtr in
@@ -187,7 +225,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func update(activity: Activity) async throws -> Activity {
+    func update(activity: Activity, config: ActivityConfig? = nil) async throws -> Activity {
         try await withCheckedThrowingContinuation { continuation in
             var cTrial = CTrial(
                 id: nil,
@@ -196,17 +234,45 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
-                activity_type: -1
+                activity_type: -1,
+                tags: nil
             )
 
-            let result = activity.id.withCString { activityIdPtr in
-                if let name = activity.name {
-                    return name.withCString { namePtr in
-                        model_health_update_activity(handle, activityIdPtr, namePtr, &cTrial)
-                    }
-                }
+            let nameString: String? = config?.name
 
-                return model_health_update_activity(handle, activityIdPtr, nil, &cTrial)
+            let addTagsJsonString: String? = {
+                guard let tags = config?.addTags, !tags.isEmpty else { return nil }
+                guard let data = try? JSONSerialization.data(withJSONObject: tags),
+                      let str = String(data: data, encoding: .utf8) else { return nil }
+                return str
+            }()
+
+            let removeTagsJsonString: String? = {
+                guard let tags = config?.removeTags, !tags.isEmpty else { return nil }
+                guard let data = try? JSONSerialization.data(withJSONObject: tags),
+                      let str = String(data: data, encoding: .utf8) else { return nil }
+                return str
+            }()
+
+            let result = activity.id.withCString { activityIdPtr in
+                let callFFI = { (namePtr: UnsafePointer<CChar>?) -> FFIResult in
+                    let callFFIWithAddTags = { (addTagsPtr: UnsafePointer<CChar>?) -> FFIResult in
+                        if let removeTagsJson = removeTagsJsonString {
+                            return removeTagsJson.withCString { removeTagsPtr in
+                                model_health_update_activity(self.handle, activityIdPtr, namePtr, addTagsPtr, removeTagsPtr, &cTrial)
+                            }
+                        }
+                        return model_health_update_activity(self.handle, activityIdPtr, namePtr, addTagsPtr, nil, &cTrial)
+                    }
+                    if let addTagsJson = addTagsJsonString {
+                        return addTagsJson.withCString { addTagsPtr in callFFIWithAddTags(addTagsPtr) }
+                    }
+                    return callFFIWithAddTags(nil)
+                }
+                if let name = nameString {
+                    return name.withCString { namePtr in callFFI(namePtr) }
+                }
+                return callFFI(nil)
             }
 
             if result.success {
@@ -247,7 +313,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 do {
                     var tags: [ActivityTag] = []
                     if cArray.count > 0, let tagsPtr = cArray.tags {
-                        tags = try (0..<cArray.count).map { i in
+                        tags = try (0..<Int(cArray.count)).map { i in
                             try ActivityTag.from(cTag: tagsPtr[i])
                         }
                     }
@@ -286,13 +352,13 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             }
 
             if result.success, cArray.count > 0, let itemsPtr = cArray.items {
-                let dataArray = (0..<cArray.count).compactMap { i -> Data? in
+                let dataArray = (0..<Int(cArray.count)).compactMap { i -> Data? in
                     let item = itemsPtr[i]
                     guard let dataPtr = item.data, item.length > 0 else {
                         return nil
                     }
 
-                    return Data(bytes: dataPtr, count: item.length)
+                    return Data(bytes: dataPtr, count: Int(item.length))
                 }
                 continuation.resume(returning: dataArray)
             } else {
@@ -325,20 +391,20 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if !standardTypes.isEmpty {
                 let typeCodes: [Int32] = standardTypes.map(\.cValue)
-                var cArray = CResultDataArray(items: nil, count: 0)
+                var cArray = CMotionDataArray(items: nil, count: 0)
 
                 let result = trial.id.withCString { trialId in
                     trial.session.withCString { sessionId in
                         typeCodes.withUnsafeBufferPointer { buffer in
                             guard let baseAddress = buffer.baseAddress else {
-                                return FFIResult(success: false, errorMessage: nil)
+                                return FFIResult(success: false, error_message: nil)
                             }
                             return model_health_download_trial_result_data(
                                 handle,
                                 trialId,
                                 sessionId,
                                 baseAddress,
-                                typeCodes.count,
+                                UInt(typeCodes.count),
                                 &cArray
                             )
                         }
@@ -346,16 +412,16 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 }
 
                 if result.success, cArray.count > 0, let itemsPtr = cArray.items {
-                    let fetched: [MotionData] = (0..<cArray.count).compactMap { i in
+                    let fetched: [MotionData] = (0..<Int(cArray.count)).compactMap { i in
                         let item = itemsPtr[i]
                         guard
-                            let dataType = MotionDataType(cValue: item.dataType),
+                            let dataType = MotionDataType(cValue: item.data_type),
                             let dataPtr = item.data,
                             item.length > 0
                         else {
                             return nil
                         }
-                        return MotionData(type: dataType, data: Data(bytes: dataPtr, count: item.length))
+                        return MotionData(type: dataType, data: Data(bytes: dataPtr, count: Int(item.length)))
                     }
                     allResults.append(contentsOf: fetched)
                 }
@@ -382,7 +448,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 if result.success, cData.length > 0, let dataPtr = cData.data {
                     let motionData = MotionData(
                         type: .tagged(tag, fileExtension),
-                        data: Data(bytes: dataPtr, count: cData.length)
+                        data: Data(bytes: dataPtr, count: Int(cData.length))
                     )
                     allResults.append(motionData)
                 }
@@ -433,11 +499,11 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 extPtrs.append(extPtr)
 
                 return CExternalResultFile(
-                    dataType: -1,
+                    data_type: -1,
                     tag: UnsafePointer(tagPtr),
-                    fileExtension: UnsafePointer(extPtr),
+                    file_extension: UnsafePointer(extPtr),
                     data: UnsafePointer(dataPtr),
-                    dataLen: file.data.count
+                    data_len: UInt(file.data.count)
                 )
             }
 
@@ -445,7 +511,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 id: nil, session: nil, name: nil, status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
-                activity_type: -1
+                activity_type: -1, tags: nil
             )
 
             let result = trial.id.withCString { trialId in
@@ -456,7 +522,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                             trialId,
                             sessionId,
                             buffer.baseAddress!,
-                            cFiles.count,
+                            UInt(cFiles.count),
                             &cTrial
                         )
                     }
@@ -492,20 +558,20 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 return
             }
 
-            var cArray = CAnalysisResultDataArray(items: nil, count: 0)
+            var cArray = CAnalysisDataArray(items: nil, count: 0)
 
             let result = trial.id.withCString { trialId in
                 trial.session.withCString { sessionId in
                     typeCodes.withUnsafeBufferPointer { buffer in
                         guard let baseAddress = buffer.baseAddress else {
-                            return FFIResult(success: false, errorMessage: nil)
+                            return FFIResult(success: false, error_message: nil)
                         }
                         return model_health_download_trial_analysis_result_data(
                             handle,
                             trialId,
                             sessionId,
                             baseAddress,
-                            typeCodes.count,
+                            UInt(typeCodes.count),
                             &cArray
                         )
                     }
@@ -521,17 +587,17 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 return
             }
 
-            let results: [AnalysisData] = (0..<cArray.count).compactMap { i in
+            let results: [AnalysisData] = (0..<Int(cArray.count)).compactMap { i in
                 let item = itemsPtr[i]
                 guard
-                    let dataType = AnalysisDataType(cValue: item.dataType),
+                    let dataType = AnalysisDataType(cValue: item.data_type),
                     let dataPtr = item.data,
                     item.length > 0
                 else {
                     return nil
                 }
 
-                return AnalysisData(type: dataType, data: Data(bytes: dataPtr, count: item.length))
+                return AnalysisData(type: dataType, data: Data(bytes: dataPtr, count: Int(item.length)))
             }
 
             continuation.resume(returning: results)
@@ -543,9 +609,9 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
     func createSession() async throws -> Session {
         try await withCheckedThrowingContinuation { continuation in
             var cSession = CSession(
-                id: nil, name: nil, sessionName: nil,
-                user: 0, isPublic: false, qrcode: nil,
-                subject: 0, trialsCount: 0
+                id: nil, name: nil, session_name: nil,
+                user: 0, is_public: false, qrcode: nil,
+                subject: 0, trials_count: 0
             )
             let result = model_health_create_session(handle, &cSession)
 
@@ -593,7 +659,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         try await withCheckedThrowingContinuation { continuation in
             var cSubject = CSubject(
                 id: 0, name: nil, weight: 0, height: 0,
-                age: 0, birthYear: 0, gender: 0, sexAtBirth: 0,
+                age: 0, birth_year: 0, gender: 0, sex_at_birth: 0,
                 characteristics: nil
             )
 
@@ -635,13 +701,28 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 id: nil, session: nil, name: nil, status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
-                activity_type: -1
+                activity_type: -1, tags: nil
             )
-            let cActivityType: Int32 = config?.activityType.cValue ?? -1
+            let cActivityType: Int32 = config?.activityType?.cValue ?? -1
+            let cFramerate: Int32 = config?.config?.framerate.map(\.cValue) ?? -1
+            let cFilterFrequency: Int32 = config?.config?.filterFrequency.map(\.cValue) ?? -1
+
+            let addTagsJsonString: String? = {
+                guard let tags = config?.addTags, !tags.isEmpty else { return nil }
+                guard let data = try? JSONSerialization.data(withJSONObject: tags),
+                      let str = String(data: data, encoding: .utf8) else { return nil }
+                return str
+            }()
 
             let result = name.withCString { trialName in
                 session.id.withCString { sessionId in
-                    model_health_start_recording(handle, trialName, sessionId, cActivityType, &cTrial)
+                    if let tagsJson = addTagsJsonString {
+                        return tagsJson.withCString { tagsPtr in
+                            model_health_start_recording(handle, trialName, sessionId, cActivityType, cFramerate, cFilterFrequency, tagsPtr, &cTrial)
+                        }
+                    }
+
+                    return model_health_start_recording(handle, trialName, sessionId, cActivityType, cFramerate, cFilterFrequency, nil, &cTrial)
                 }
             }
 
@@ -784,9 +865,9 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             let contextPtr = Unmanaged.passRetained(context).toOpaque()
 
             var cSession = CSession(
-                id: nil, name: nil, sessionName: nil,
-                user: 0, isPublic: false, qrcode: nil,
-                subject: 0, trialsCount: 0
+                id: nil, name: nil, session_name: nil,
+                user: 0, is_public: false, qrcode: nil,
+                subject: 0, trials_count: 0
             )
 
             let result: FFIResult = activitiesJson.withCString { activitiesJsonPtr in
@@ -843,7 +924,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             var statusCode: Int32 = -1
             var uploaded: Int32 = 0
             var total: Int32 = 0
-            var cTask = CAnalysis(taskId: nil)
+            var cTask = CAnalysis(task_id: nil)
 
             let result = activity.id.withCString { trialId in
                 activity.session.withCString { sessionId in
@@ -866,12 +947,12 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     total: total,
                     analysisTask: cTask
                 )
-                if let taskId = cTask.taskId {
+                if let taskId = cTask.task_id {
                     model_health_free_string(taskId)
                 }
                 continuation.resume(returning: status)
             } else {
-                if let taskId = cTask.taskId {
+                if let taskId = cTask.task_id {
                     model_health_free_string(taskId)
                 }
                 handleFFIError(result, continuation: continuation)
@@ -892,7 +973,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 return
             }
 
-            var cTask = CAnalysis(taskId: nil)
+            var cTask = CAnalysis(task_id: nil)
 
             let result = trial.id.withCString { trialId in
                 session.id.withCString { sessionId in
@@ -910,12 +991,12 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             if result.success {
                 do {
                     let task = try Analysis.from(cTask: cTask)
-                    if let taskId = cTask.taskId {
+                    if let taskId = cTask.task_id {
                         model_health_free_string(taskId)
                     }
                     continuation.resume(returning: task)
                 } catch {
-                    if let taskId = cTask.taskId {
+                    if let taskId = cTask.task_id {
                         model_health_free_string(taskId)
                     }
                     continuation.resume(
@@ -955,7 +1036,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     func prepareArchive(for session: Session, withVideos: Bool) async throws -> Archive {
         try await withCheckedThrowingContinuation { continuation in
-            var cArchive = CArchive(archiveId: nil)
+            var cArchive = CArchive(archive_id: nil)
 
             let result = session.id.withCString { sessionId in
                 model_health_prepare_archive(handle, sessionId, withVideos ? 1 : 0, &cArchive)
@@ -1011,12 +1092,90 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 if let dataPtr = cData.data, cData.length > 0 {
-                    let data = Data(bytes: dataPtr, count: cData.length)
+                    let data = Data(bytes: dataPtr, count: Int(cData.length))
                     model_health_free_data(cData)
                     continuation.resume(returning: data)
                 } else {
                     model_health_free_data(cData)
                     continuation.resume(returning: Data())
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
+    // MARK: - Metrics Operations
+
+    func activityMetrics(for activityId: String) async throws -> ActivityMetrics? {
+        try await withCheckedThrowingContinuation { continuation in
+            var cMetrics = CActivityMetrics(
+                activity_id: nil,
+                activity_type_id: 0,
+                groups: CMetricsGroupArray(items: nil, count: 0)
+            )
+
+            let result = activityId.withCString { activityIdPtr in
+                model_health_activity_metrics(handle, activityIdPtr, &cMetrics)
+            }
+
+            if result.success {
+                guard cMetrics.activity_id != nil else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                do {
+                    let metrics = try ActivityMetrics.from(cMetrics: cMetrics)
+                    model_health_free_activity_metrics(cMetrics)
+                    continuation.resume(returning: metrics)
+                } catch {
+                    model_health_free_activity_metrics(cMetrics)
+                    continuation.resume(throwing: error)
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
+    func subjectMetrics(forSubject subjectId: Int, start: Date?, end: Date?) async throws -> [ActivityMetrics] {
+        let startStr = start.map { metricDateFormatter.string(from: $0) }
+        let endStr = end.map { metricDateFormatter.string(from: $0) }
+        return try await withCheckedThrowingContinuation { continuation in
+            var cArray = CActivityMetricsArray(items: nil, count: 0)
+
+            func callFFI(startPtr: UnsafePointer<CChar>?, endPtr: UnsafePointer<CChar>?) -> FFIResult {
+                model_health_subject_metrics(handle, Int32(subjectId), startPtr, endPtr, &cArray)
+            }
+
+            let result: FFIResult
+            switch (startStr, endStr) {
+            case (let s?, let e?):
+                result = s.withCString { sp in e.withCString { ep in callFFI(startPtr: sp, endPtr: ep) } }
+
+            case (let s?, nil):
+                result = s.withCString { sp in callFFI(startPtr: sp, endPtr: nil) }
+
+            case (nil, let e?):
+                result = e.withCString { ep in callFFI(startPtr: nil, endPtr: ep) }
+
+            case (nil, nil):
+                result = callFFI(startPtr: nil, endPtr: nil)
+            }
+
+            if result.success {
+                do {
+                    var allMetrics: [ActivityMetrics] = []
+                    if cArray.count > 0, let itemsPtr = cArray.items {
+                        allMetrics = try (0..<Int(cArray.count)).map { i in
+                            try ActivityMetrics.from(cMetrics: itemsPtr[i])
+                        }
+                    }
+                    model_health_free_activity_metrics_array(cArray)
+                    continuation.resume(returning: allMetrics)
+                } catch {
+                    model_health_free_activity_metrics_array(cArray)
+                    continuation.resume(throwing: error)
                 }
             } else {
                 handleFFIError(result, continuation: continuation)
@@ -1043,10 +1202,14 @@ private extension ModelHealthProviderImpl {
         _ result: FFIResult,
         continuation: CheckedContinuation<T, Error>
     ) {
-        if let errorMessage = result.errorMessage {
+        if let errorMessage = result.error_message {
             let error = String(cString: errorMessage)
             model_health_free_error(errorMessage)
-            continuation.resume(throwing: ModelHealthError.internalError(error))
+            if error.contains("not supported") {
+                continuation.resume(throwing: ModelHealthError.notSupported)
+            } else {
+                continuation.resume(throwing: ModelHealthError.internalError(error))
+            }
         } else {
             continuation.resume(throwing: ModelHealthError.internalError("Unknown error"))
         }
@@ -1055,7 +1218,7 @@ private extension ModelHealthProviderImpl {
     func freeSessionFields(_ session: CSession) {
         session.id.map { model_health_free_string($0) }
         session.name.map { model_health_free_string($0) }
-        session.sessionName.map { model_health_free_string($0) }
+        session.session_name.map { model_health_free_string($0) }
         session.qrcode.map { model_health_free_string($0) }
     }
 
@@ -1069,6 +1232,7 @@ private extension ModelHealthProviderImpl {
         trial.session.map { model_health_free_string($0) }
         trial.name.map { model_health_free_string($0) }
         trial.status.map { model_health_free_string($0) }
+        trial.tags.map { model_health_free_string($0) }
         model_health_free_video_array(trial.videos)
         model_health_free_trial_result_array(trial.results)
     }
