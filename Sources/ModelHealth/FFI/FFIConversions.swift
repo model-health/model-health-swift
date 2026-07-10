@@ -8,6 +8,39 @@ enum FFIConversionError: Error {
     case invalidData(String)
 }
 
+private let ffiDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+}()
+
+/// Drops any `.NNNNNN` fractional-seconds component so the date parser never has to deal
+/// with fractional seconds — e.g. `"2024-01-15T10:30:00.123456Z"` -> `"2024-01-15T10:30:00Z"`.
+private func stripFractionalSeconds(_ s: String) -> String {
+    guard let dotIndex = s.firstIndex(of: ".") else {
+        return s
+    }
+
+    var suffixStart = s.index(after: dotIndex)
+    while suffixStart < s.endIndex, s[suffixStart].isNumber {
+        suffixStart = s.index(after: suffixStart)
+    }
+    
+    return String(s[..<dotIndex]) + String(s[suffixStart...])
+}
+
+/// Parses a non-null, always-present FFI timestamp string (ISO-8601, second precision).
+private func parseFFIDate(_ cString: UnsafePointer<CChar>?, fieldName: String) throws -> Date {
+    guard let cString else {
+        throw FFIConversionError.nullPointer("\(fieldName) is null")
+    }
+    let raw = stripFractionalSeconds(String(cString: cString))
+    guard let date = ffiDateFormatter.date(from: raw) else {
+        throw FFIConversionError.invalidData("\(fieldName) is not a valid ISO-8601 date")
+    }
+    return date
+}
+
 extension Session {
     internal static func from(cSession: CSession) throws -> Session {
         guard let id = cSession.id else {
@@ -31,7 +64,9 @@ extension Session {
             qrcode: cSession.qrcode.map { String(cString: $0) },
             activities: [],
             subject: cSession.subject == -1 ? nil : Int(cSession.subject),
-            activitiesCount: Int(cSession.trials_count)
+            activitiesCount: Int(cSession.trials_count),
+            createdAt: try parseFFIDate(cSession.created_at, fieldName: "Session createdAt"),
+            updatedAt: try parseFFIDate(cSession.updated_at, fieldName: "Session updatedAt")
         )
     }
 }
@@ -138,7 +173,9 @@ extension Activity {
             videos: videos,
             results: results,
             activityType: ActivityType(cValue: cTrial.activity_type),
-            tags: tags
+            tags: tags,
+            createdAt: try parseFFIDate(cTrial.created_at, fieldName: "Activity createdAt"),
+            updatedAt: try parseFFIDate(cTrial.updated_at, fieldName: "Activity updatedAt")
         )
     }
 }

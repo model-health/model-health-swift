@@ -320,19 +320,26 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///   - startIndex: Zero-based index to start from. Use `0` for the first page.
     ///   - count: Number of activities to retrieve per request.
     ///   - sort: Sort order for the results (e.g., `.updatedAt` for most recent first).
+    ///   - start: Optional inclusive start date to filter the results to a date range.
+    ///   - end: Optional inclusive end date to filter the results to a date range.
     /// - Returns: An array of ``Activity`` objects, or an empty array if none exist.
+    /// - Throws: ``ModelHealthError/notSupported`` if `start` or `end` is set and the service isn't configured for API v2.
     /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func activities(
         forSubject subjectId: Int,
         startIndex: Int,
         count: Int,
-        sortedBy sort: ActivitySort
+        sortedBy sort: ActivitySort,
+        start: Date? = nil,
+        end: Date? = nil
     ) async throws -> [Activity] {
         try await serviceProvider.activities(
             forSubject: subjectId,
             startIndex: startIndex,
             count: count,
-            sortedBy: sort
+            sortedBy: sort,
+            start: start,
+            end: end
         )
     }
 
@@ -861,12 +868,14 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthService/subjectList()``
     func subjectList() async throws -> [Subject]
 
-    /// See ``ModelHealthService/activities(forSubject:startIndex:count:sortedBy:)``
+    /// See ``ModelHealthService/activities(forSubject:startIndex:count:sortedBy:start:end:)``
     func activities(
         forSubject subjectId: Int,
         startIndex: Int,
         count: Int,
-        sortedBy sort: ActivitySort
+        sortedBy sort: ActivitySort,
+        start: Date?,
+        end: Date?
     ) async throws -> [Activity]
 
     /// See ``ModelHealthService/fetch(activity:)``

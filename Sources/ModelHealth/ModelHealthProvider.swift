@@ -64,9 +64,16 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
     func getSession(id sessionId: String) async throws -> Session {
         try await withCheckedThrowingContinuation { continuation in
             var cSession = CSession(
-                id: nil, name: nil, session_name: nil,
-                user: 0, is_public: false, qrcode: nil,
-                subject: 0, trials_count: 0
+                id: nil,
+                name: nil,
+                session_name: nil,
+                user: 0,
+                is_public: false,
+                qrcode: nil,
+                subject: 0,
+                trials_count: 0,
+                created_at: nil,
+                updated_at: nil
             )
 
             let result = sessionId.withCString { sessionIdPtr in
@@ -154,20 +161,41 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         forSubject subjectId: Int,
         startIndex: Int,
         count: Int,
-        sortedBy sort: ActivitySort
+        sortedBy sort: ActivitySort,
+        start: Date?,
+        end: Date?
     ) async throws -> [Activity] {
-        try await withCheckedThrowingContinuation { continuation in
+        let startStr = start.map { metricDateFormatter.string(from: $0) }
+        let endStr = end.map { metricDateFormatter.string(from: $0) }
+
+        return try await withCheckedThrowingContinuation { continuation in
             var cArray = CTrialArray(trials: nil, count: 0)
             let sortCode = activitySortToI32(sort)
 
-            let result = model_health_activities_for_subject(
-                handle,
-                Int32(subjectId),
-                UInt32(startIndex),
-                UInt32(count),
-                sortCode,
-                &cArray
-            )
+            func callFFI(startPtr: UnsafePointer<CChar>?, endPtr: UnsafePointer<CChar>?) -> FFIResult {
+                model_health_activities_for_subject(
+                    handle,
+                    Int32(subjectId),
+                    UInt32(startIndex),
+                    UInt32(count),
+                    sortCode,
+                    startPtr,
+                    endPtr,
+                    &cArray
+                )
+            }
+
+            let result: FFIResult
+            switch (startStr, endStr) {
+            case (let s?, let e?):
+                result = s.withCString { sp in e.withCString { ep in callFFI(startPtr: sp, endPtr: ep) } }
+            case (let s?, nil):
+                result = s.withCString { sp in callFFI(startPtr: sp, endPtr: nil) }
+            case (nil, let e?):
+                result = e.withCString { ep in callFFI(startPtr: nil, endPtr: ep) }
+            case (nil, nil):
+                result = callFFI(startPtr: nil, endPtr: nil)
+            }
 
             defer {
                 model_health_free_trial_array(cArray)
@@ -203,7 +231,9 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
                 activity_type: -1,
-                tags: nil
+                tags: nil,
+                created_at: nil,
+                updated_at: nil
             )
 
             let result = activityId.withCString { activityIdPtr in
@@ -235,22 +265,40 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
                 activity_type: -1,
-                tags: nil
+                tags: nil,
+                created_at: nil,
+                updated_at: nil
             )
 
             let nameString: String? = config?.name
 
             let addTagsJsonString: String? = {
-                guard let tags = config?.addTags, !tags.isEmpty else { return nil }
-                guard let data = try? JSONSerialization.data(withJSONObject: tags),
-                      let str = String(data: data, encoding: .utf8) else { return nil }
+                guard let tags = config?.addTags, !tags.isEmpty else {
+                    return nil
+                }
+
+                guard 
+                    let data = try? JSONSerialization.data(withJSONObject: tags),
+                    let str = String(data: data, encoding: .utf8)
+                else {
+                    return nil
+                }
+
                 return str
             }()
 
             let removeTagsJsonString: String? = {
-                guard let tags = config?.removeTags, !tags.isEmpty else { return nil }
-                guard let data = try? JSONSerialization.data(withJSONObject: tags),
-                      let str = String(data: data, encoding: .utf8) else { return nil }
+                guard let tags = config?.removeTags, !tags.isEmpty else {
+                    return nil
+                }
+
+                guard 
+                    let data = try? JSONSerialization.data(withJSONObject: tags),
+                    let str = String(data: data, encoding: .utf8)
+                else {
+                    return nil
+                }
+
                 return str
             }()
 
@@ -508,10 +556,16 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             }
 
             var cTrial = CTrial(
-                id: nil, session: nil, name: nil, status: nil,
+                id: nil,
+                session: nil,
+                name: nil,
+                status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
-                activity_type: -1, tags: nil
+                activity_type: -1,
+                tags: nil,
+                created_at: nil,
+                updated_at: nil
             )
 
             let result = trial.id.withCString { trialId in
@@ -609,9 +663,16 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
     func createSession() async throws -> Session {
         try await withCheckedThrowingContinuation { continuation in
             var cSession = CSession(
-                id: nil, name: nil, session_name: nil,
-                user: 0, is_public: false, qrcode: nil,
-                subject: 0, trials_count: 0
+                id: nil,
+                name: nil,
+                session_name: nil,
+                user: 0,
+                is_public: false,
+                qrcode: nil,
+                subject: 0,
+                trials_count: 0,
+                created_at: nil,
+                updated_at: nil
             )
             let result = model_health_create_session(handle, &cSession)
 
@@ -698,19 +759,33 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
     func startRecording(activityNamed name: String, in session: Session, config: ActivityConfig? = nil) async throws -> Activity {
         try await withCheckedThrowingContinuation { continuation in
             var cTrial = CTrial(
-                id: nil, session: nil, name: nil, status: nil,
+                id: nil,
+                session: nil,
+                name: nil,
+                status: nil,
                 videos: CVideoArray(videos: nil, count: 0),
                 results: CTrialResultArray(results: nil, count: 0),
-                activity_type: -1, tags: nil
+                activity_type: -1,
+                tags: nil,
+                created_at: nil,
+                updated_at: nil
             )
             let cActivityType: Int32 = config?.activityType?.cValue ?? -1
             let cFramerate: Int32 = config?.config?.framerate.map(\.cValue) ?? -1
             let cFilterFrequency: Int32 = config?.config?.filterFrequency.map(\.cValue) ?? -1
 
             let addTagsJsonString: String? = {
-                guard let tags = config?.addTags, !tags.isEmpty else { return nil }
-                guard let data = try? JSONSerialization.data(withJSONObject: tags),
-                      let str = String(data: data, encoding: .utf8) else { return nil }
+                guard let tags = config?.addTags, !tags.isEmpty else {
+                    return nil
+                }
+
+                guard 
+                    let data = try? JSONSerialization.data(withJSONObject: tags),
+                    let str = String(data: data, encoding: .utf8)
+                else {
+                    return nil
+                }
+
                 return str
             }()
 
@@ -865,9 +940,16 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             let contextPtr = Unmanaged.passRetained(context).toOpaque()
 
             var cSession = CSession(
-                id: nil, name: nil, session_name: nil,
-                user: 0, is_public: false, qrcode: nil,
-                subject: 0, trials_count: 0
+                id: nil,
+                name: nil,
+                session_name: nil,
+                user: 0,
+                is_public: false,
+                qrcode: nil,
+                subject: 0,
+                trials_count: 0,
+                created_at: nil,
+                updated_at: nil
             )
 
             let result: FFIResult = activitiesJson.withCString { activitiesJsonPtr in
@@ -882,7 +964,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     config.filterFrequency.cValue,
                     config.dataSharing.cValue,
                     { userDataPtr, statusJsonPtr in
-                        guard let userDataPtr, let statusJsonPtr else { 
+                        guard let userDataPtr, let statusJsonPtr else {
                             return
                         }
                         let ctx = Unmanaged<CallbackContext<ImportStatus>>

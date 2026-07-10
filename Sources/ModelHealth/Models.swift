@@ -23,6 +23,8 @@ public struct Session: Identifiable, Sendable {
     public let activities: [Activity]
     public let subject: Int?
     public let activitiesCount: Int
+    public let createdAt: Date
+    public let updatedAt: Date
 }
 
 extension Session: Equatable {
@@ -204,6 +206,8 @@ public struct Activity: Sendable {
     public let activityType: ActivityType?
     /// Tags applied to this activity.
     public let tags: [String]
+    public let createdAt: Date
+    public let updatedAt: Date
 }
 
 /// Sort order for activity lists.
@@ -962,6 +966,8 @@ extension Session {
         public var activities: [Activity] = []
         public var subject: Int? = nil
         public var activitiesCount = 0
+        public var createdAt = Date()
+        public var updatedAt = Date()
 
         func build() -> Session {
             Session(
@@ -973,7 +979,9 @@ extension Session {
                 qrcode: qrcode,
                 activities: activities,
                 subject: subject,
-                activitiesCount: activitiesCount
+                activitiesCount: activitiesCount,
+                createdAt: createdAt,
+                updatedAt: updatedAt
             )
         }
     }
@@ -1060,6 +1068,8 @@ extension Activity {
         public var results: [Activity.Result] = []
         public var activityType: ActivityType? = nil
         public var tags: [String] = []
+        public var createdAt = Date()
+        public var updatedAt = Date()
 
         func build() -> Activity {
             Activity(
@@ -1070,7 +1080,9 @@ extension Activity {
                 videos: videos,
                 results: results,
                 activityType: activityType,
-                tags: tags
+                tags: tags,
+                createdAt: createdAt,
+                updatedAt: updatedAt
             )
         }
     }
