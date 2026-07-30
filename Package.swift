@@ -11,18 +11,30 @@ let package = Package(
         .library(
             name: "ModelHealth",
             targets: ["ModelHealth"]
+        ),
+        .library(
+            name: "ModelHealthUI",
+            targets: ["ModelHealthUI"]
         )
     ],
     targets: [
         .binaryTarget(
             name: "ModelHealthFFI",
-            url: "https://github.com/model-health/model-health-swift/releases/download/v0.7.0/ModelHealthFFI.xcframework.zip",
-            checksum: "ecdbdd984ccc50f64cb5e2cd1a90c72a2c0ab7ecd5ded4709e5af33891874633"
+            url: "https://github.com/model-health/model-health-swift/releases/download/v0.8.0/ModelHealthFFI.xcframework.zip",
+            checksum: "003165974025ccd771dcbccba0abae4506a5f733c135bd3866f631eccb5042f9"
         ),
         .target(
             name: "ModelHealth",
             dependencies: ["ModelHealthFFI"],
             path: "Sources/ModelHealth"
+        ),
+        .target(
+            name: "ModelHealthUI",
+            dependencies: ["ModelHealth"],
+            path: "Sources/ModelHealthUI",
+            resources: [
+                .copy("Resources/WebBundle")
+            ]
         ),
     ]
 )

@@ -16,17 +16,17 @@ private let ffiDateFormatter: ISO8601DateFormatter = {
 
 /// Drops any `.NNNNNN` fractional-seconds component so the date parser never has to deal
 /// with fractional seconds — e.g. `"2024-01-15T10:30:00.123456Z"` -> `"2024-01-15T10:30:00Z"`.
-private func stripFractionalSeconds(_ s: String) -> String {
-    guard let dotIndex = s.firstIndex(of: ".") else {
-        return s
+private func stripFractionalSeconds(_ dateString: String) -> String {
+    guard let dotIndex = dateString.firstIndex(of: ".") else {
+        return dateString
     }
 
-    var suffixStart = s.index(after: dotIndex)
-    while suffixStart < s.endIndex, s[suffixStart].isNumber {
-        suffixStart = s.index(after: suffixStart)
+    var suffixStart = dateString.index(after: dotIndex)
+    while suffixStart < dateString.endIndex, dateString[suffixStart].isNumber {
+        suffixStart = dateString.index(after: suffixStart)
     }
-    
-    return String(s[..<dotIndex]) + String(s[suffixStart...])
+
+    return String(dateString[..<dotIndex]) + String(dateString[suffixStart...])
 }
 
 /// Parses a non-null, always-present FFI timestamp string (ISO-8601, second precision).
@@ -34,10 +34,12 @@ private func parseFFIDate(_ cString: UnsafePointer<CChar>?, fieldName: String) t
     guard let cString else {
         throw FFIConversionError.nullPointer("\(fieldName) is null")
     }
+
     let raw = stripFractionalSeconds(String(cString: cString))
     guard let date = ffiDateFormatter.date(from: raw) else {
         throw FFIConversionError.invalidData("\(fieldName) is not a valid ISO-8601 date")
     }
+
     return date
 }
 
@@ -145,15 +147,15 @@ extension Activity {
 
         var videos: [Video] = []
         if cTrial.videos.count > 0, let videosPtr = cTrial.videos.videos {
-            videos = try (0..<Int(cTrial.videos.count)).map { i in
-                try Video.from(cVideo: videosPtr[i])
+            videos = try (0..<Int(cTrial.videos.count)).map { index in
+                try Video.from(cVideo: videosPtr[index])
             }
         }
 
         var results: [Activity.Result] = []
         if cTrial.results.count > 0, let resultsPtr = cTrial.results.results {
-            results = try (0..<Int(cTrial.results.count)).map { i in
-                try Activity.Result.from(cResult: resultsPtr[i])
+            results = try (0..<Int(cTrial.results.count)).map { index in
+                try Activity.Result.from(cResult: resultsPtr[index])
             }
         }
 
@@ -208,8 +210,12 @@ extension Analysis {
 }
 
 extension ActivityStatus {
-    internal static func from(statusCode: Int32, uploaded: Int32, total: Int32, analysisTask: CAnalysis) -> ActivityStatus
-    {
+    internal static func from(
+        statusCode: Int32,
+        uploaded: Int32,
+        total: Int32,
+        analysisTask: CAnalysis
+    ) -> ActivityStatus {
         switch statusCode {
         case 0:
             return .uploading(uploaded: Int(uploaded), total: Int(total))
@@ -468,6 +474,7 @@ extension ActivityType {
         }
     }
 
+    // swiftlint:disable:next cyclomatic_complexity
     init?(cValue: Int32) {
         switch cValue {
         case 0:
@@ -514,6 +521,37 @@ extension ActivityType {
 
         case 14:
             self = .lunge
+
+        default:
+            return nil
+        }
+    }
+}
+
+extension VideoUploadMode {
+    var cValue: Int32 {
+        switch self {
+        case .enabled:
+            return 0
+
+        case .disabled:
+            return 1
+
+        case .flush:
+            return 2
+        }
+    }
+
+    init?(cValue: Int32) {
+        switch cValue {
+        case 0:
+            self = .enabled
+
+        case 1:
+            self = .disabled
+
+        case 2:
+            self = .flush
 
         default:
             return nil
@@ -664,8 +702,8 @@ extension FilterFrequency {
         case .default:
             return -1
 
-        case .hz(let n):
-            return Int32(n)
+        case .hz(let value):
+            return Int32(value)
         }
     }
 }
@@ -699,12 +737,16 @@ private enum CodableImportStatus: Decodable {
     case processing
 
     private enum VariantKeys: String, CodingKey {
-        case created_session
-        case uploading_video
+        case createdSession = "created_session"
+        case uploadingVideo = "uploading_video"
     }
 
     private struct CreatedSessionPayload: Decodable {
-        let session_id: String
+        let sessionId: String
+
+        private enum CodingKeys: String, CodingKey {
+            case sessionId = "session_id"
+        }
     }
 
     private struct UploadingPayload: Decodable {
@@ -734,13 +776,13 @@ private enum CodableImportStatus: Decodable {
 
         // Try keyed container (struct variant: {"created_session": {...}} or {"uploading_video": {...}})
         let container = try decoder.container(keyedBy: VariantKeys.self)
-        if container.contains(.created_session) {
-            let payload = try container.decode(CreatedSessionPayload.self, forKey: .created_session)
-            self = .createdSession(sessionId: payload.session_id)
+        if container.contains(.createdSession) {
+            let payload = try container.decode(CreatedSessionPayload.self, forKey: .createdSession)
+            self = .createdSession(sessionId: payload.sessionId)
             return
         }
-        if container.contains(.uploading_video) {
-            let payload = try container.decode(UploadingPayload.self, forKey: .uploading_video)
+        if container.contains(.uploadingVideo) {
+            let payload = try container.decode(UploadingPayload.self, forKey: .uploadingVideo)
             self = .uploadingVideo(trial: payload.trial, uploaded: payload.uploaded, total: payload.total)
             return
         }
@@ -881,8 +923,8 @@ extension MetricsGroup {
 
         var metrics: [Metric] = []
         if cGroup.metrics.count > 0, let itemsPtr = cGroup.metrics.items {
-            metrics = try (0..<Int(cGroup.metrics.count)).map { i in
-                try Metric.from(cValue: itemsPtr[i])
+            metrics = try (0..<Int(cGroup.metrics.count)).map { index in
+                try Metric.from(cValue: itemsPtr[index])
             }
         }
 
@@ -902,8 +944,8 @@ extension ActivityMetrics {
 
         var groups: [MetricsGroup] = []
         if cMetrics.groups.count > 0, let itemsPtr = cMetrics.groups.items {
-            groups = try (0..<Int(cMetrics.groups.count)).map { i in
-                try MetricsGroup.from(cGroup: itemsPtr[i])
+            groups = try (0..<Int(cMetrics.groups.count)).map { index in
+                try MetricsGroup.from(cGroup: itemsPtr[index])
             }
         }
 

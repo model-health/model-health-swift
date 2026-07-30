@@ -154,6 +154,23 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
         try await serviceProvider.getSession(id: sessionId)
     }
 
+    /// Creates a new session from a previous session, inheriting its calibration setup.
+    ///
+    /// Use this to move directly to calibrating a new subject without repeating
+    /// camera connection or checkerboard calibration.
+    ///
+    /// ```swift
+    /// let newSession = try await service.newSession(from: previousSession)
+    /// ```
+    ///
+    /// - Parameter session: The previous, already-calibrated session.
+    /// - Returns: A new ``Session`` ready for a new subject.
+    /// - Throws: A ``ModelHealthError`` if the request fails or the session is
+    ///   not found.
+    public func newSession(from session: Session) async throws -> Session {
+        try await serviceProvider.newSession(from: session)
+    }
+
     /// Retrieves all movement activities associated with a session.
     ///
     /// Activities represent individual recording trials and contain references to
@@ -234,7 +251,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// - Parameters:
     ///   - files: The external files to attach, with tag, file extension and data.
     ///   - activity: The activity to attach the files to.
-    /// - Returns: The refreshed ``Activity`` containing the newly created ``ActivityResult`` entries.
+    /// - Returns: The refreshed ``Activity`` containing the newly created ``Activity/Result`` entries.
     /// - Throws: ``ModelHealthError`` if any upload fails or the server is unreachable.
     public func addMotionData(_ files: [ExternalResultFile], to activity: Activity) async throws -> Activity {
         try await serviceProvider.addMotionData(files, to: activity)
@@ -846,10 +863,22 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///   - start: Optional inclusive start date for the range.
     ///   - end: Optional inclusive end date for the range.
     /// - Returns: A list of ``ActivityMetrics``, one per activity.
-    /// - Throws: ``ModelHealthError/notFound`` if the subject does not exist.
+    /// - Throws: ``ModelHealthError/http(_:)`` with `.clientError(statusCode: 404)` if the subject does not exist.
     /// - Throws: A ``ModelHealthError`` on authentication failure or network error.
     public func subjectMetrics(forSubject subjectId: Int, start: Date? = nil, end: Date? = nil) async throws -> [ActivityMetrics] {
         try await serviceProvider.subjectMetrics(forSubject: subjectId, start: start, end: end)
+    }
+
+    /// Sets the video upload mode
+    ///
+    /// ```swift
+    /// try await service.setVideoUploadMode(.disabled)
+    /// ```
+    ///
+    /// - Parameter mode: The desired video upload mode.
+    /// - Throws: A ``ModelHealthError`` on authentication failure or network error.
+    public func setVideoUploadMode(_ mode: VideoUploadMode) async throws {
+        try await serviceProvider.setVideoUploadMode(mode)
     }
 }
 
@@ -864,6 +893,9 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthService/getSession(id:)``
     func getSession(id sessionId: String) async throws -> Session
+
+    /// See ``ModelHealthService/newSession(from:)``
+    func newSession(from session: Session) async throws -> Session
 
     /// See ``ModelHealthService/subjectList()``
     func subjectList() async throws -> [Subject]
@@ -972,18 +1004,21 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthService/subjectMetrics(forSubject:start:end:)``
     func subjectMetrics(forSubject subjectId: Int, start: Date?, end: Date?) async throws -> [ActivityMetrics]
+
+    /// See ``ModelHealthService/setVideoUploadMode(_:)``
+    func setVideoUploadMode(_ mode: VideoUploadMode) async throws
 }
 
 /// Errors thrown by ``ModelHealthService``.
-public enum ModelHealthError: Error, Sendable {
+public enum ModelHealthError: Error, Sendable, Equatable {
     /// Errors specific to camera or subject calibration
-    public enum CalibrationError: Sendable {
+    public enum CalibrationError: Sendable, Equatable {
         case notEnoughCameras
         case calibrationFailed
     }
 
     /// HTTP response errors with status codes and optional server message
-    public enum HTTPError: Sendable {
+    public enum HTTPError: Sendable, Equatable {
         /// A client error response (400–499).
         case clientError(statusCode: Int)
         /// A server error response (500–599).
@@ -993,7 +1028,7 @@ public enum ModelHealthError: Error, Sendable {
     }
 
     /// Data file conversion errors
-    public enum ConversionError: Sendable {
+    public enum ConversionError: Sendable, Equatable {
         case invalidEncoding
         case couldNotDetermineCSVColumns
         case emptyFile

@@ -166,6 +166,18 @@ public enum VideoVersion: Sendable {
     case synced
 }
 
+/// Controls whether a user's devices upload recorded video.
+public enum VideoUploadMode: String, CaseIterable, Sendable {
+    /// Devices upload recorded video normally.
+    case enabled
+
+    /// Devices stop uploading recorded video.
+    case disabled
+
+    /// Re-enables uploads, and uploads any videos that were queued locally while disabled.
+    case flush
+}
+
 // MARK: - Activity Management
 
 /// A movement recording trial with associated videos and results.
@@ -604,7 +616,13 @@ public struct ActivityConfig: Sendable {
     /// New display name to set on the activity.
     public let name: String?
 
-    public init(activityType: ActivityType? = nil, config: RecordingConfig? = nil, addTags: [String] = [], removeTags: [String] = [], name: String? = nil) {
+    public init(
+        activityType: ActivityType? = nil,
+        config: RecordingConfig? = nil,
+        addTags: [String] = [],
+        removeTags: [String] = [],
+        name: String? = nil
+    ) {
         self.activityType = activityType
         self.config = config
         self.addTags = addTags
@@ -941,7 +959,10 @@ extension ActivityMetrics {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         }
         let data = try encoder.encode(self)
-        return String(decoding: data, as: UTF8.self)
+        guard let jsonString = String(data: data, encoding: .utf8) else {
+            throw ModelHealthError.internalError("Failed to encode JSON as UTF-8")
+        }
+        return jsonString
     }
 }
 
@@ -964,7 +985,7 @@ extension Session {
         public var sessionName = "Session Name"
         public var qrcode: String? = "https://example.com/qr.png"
         public var activities: [Activity] = []
-        public var subject: Int? = nil
+        public var subject: Int?
         public var activitiesCount = 0
         public var createdAt = Date()
         public var updatedAt = Date()
@@ -1066,7 +1087,7 @@ extension Activity {
         public var status: String = "done"
         public var videos: [Video] = []
         public var results: [Activity.Result] = []
-        public var activityType: ActivityType? = nil
+        public var activityType: ActivityType?
         public var tags: [String] = []
         public var createdAt = Date()
         public var updatedAt = Date()
@@ -1212,8 +1233,8 @@ extension Metric {
     }
 
     public struct PreviewBuilder {
-        public var name = "Peak Force"
-        public var description: String? = "Maximum ground reaction force"
+        public var name = "Peak Value"
+        public var description: String? = "Maximum value"
         public var value: MetricValue = .scalar(87.5)
 
         func build() -> Metric {
@@ -1237,7 +1258,7 @@ extension MetricsGroup {
 
     public struct PreviewBuilder {
         public var name = "Force"
-        public var description: String? = "Ground reaction force metrics"
+        public var description: String? = "Value"
         public var metrics: [Metric] = [Metric.forPreview()]
 
         func build() -> MetricsGroup {
@@ -1277,6 +1298,8 @@ extension AnalysisData {
 
     public struct PreviewBuilder {
         public let resultDataType: AnalysisDataType = .metrics
+        // Fixture JSON below has long "info" values that can't be wrapped without corrupting the string.
+        // swiftlint:disable line_length
         public let data: Data = Data(
             """
             {
@@ -1307,6 +1330,8 @@ extension AnalysisData {
             }
             """.utf8
         )
+
+        // swiftlint:enable line_length
 
         func build() -> AnalysisData {
             AnalysisData(
