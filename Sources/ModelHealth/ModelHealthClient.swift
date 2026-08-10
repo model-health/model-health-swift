@@ -2,7 +2,7 @@ import Foundation
 
 /// The primary interface for Model Health's movement analysis platform.
 ///
-/// ModelHealthService enables you to measure and analyze human movement from smartphone
+/// ModelHealthClient enables you to measure and analyze human movement from smartphone
 /// videos. It provides a complete workflow for:
 /// - Authentication and session management
 /// - Subject profile management
@@ -25,30 +25,30 @@ import Foundation
 /// ## Usage Example
 ///
 /// ```swift
-/// let service = try ModelHealthService(apiKey: "your-api-key")
+/// let client = try ModelHealthClient(apiKey: "your-api-key")
 ///
 /// // Create session
-/// let session = try await service.createSession()
+/// let session = try await client.createSession()
 ///
 /// // Calibrate cameras
 /// let details = CheckerboardDetails(rows: 4, columns: 5, squareSize: 35, placement: .perpendicular)
-/// try await service.calibrateCamera(session, checkerboardDetails: details) { status in }
+/// try await client.calibrateCamera(session, checkerboardDetails: details) { status in }
 ///
 /// // Create subject and calibrate
 /// let params = SubjectParameters(name: "Jane Doe", weight: 65, height: 170, birthYear: 1990, gender: .woman, sexAtBirth: .woman)
-/// let subject = try await service.createSubject(parameters: params)
-/// try await service.calibrateSubject(subject, in: session) { status in }
+/// let subject = try await client.createSubject(parameters: params)
+/// try await client.calibrateSubject(subject, in: session) { status in }
 ///
 /// // Record a movement activity
-/// let activity = try await service.startRecording(activityNamed: "cmj", in: session)
+/// let activity = try await client.startRecording(activityNamed: "cmj", in: session)
 /// // Subject performs movement...
-/// try await service.stopRecording(session)
+/// try await client.stopRecording(session)
 ///
 /// // Check if activity is ready for analysis (poll until .ready)
-/// let status = try await service.activityStatus(for: activity)
+/// let status = try await client.activityStatus(for: activity)
 /// // Run advanced biomechanical analysis when ready
 /// if case .ready = status {
-///     let task = try await service.startAnalysis(.counterMovementJump, for: activity, in: session)
+///     let task = try await client.startAnalysis(.counterMovementJump, for: activity, in: session)
 ///     // Poll for analysis completion...
 /// }
 /// ```
@@ -72,23 +72,27 @@ import Foundation
 /// - ``startAnalysis(_:for:in:)``
 /// - ``analysisStatus(for:)``
 /// - ``analysisData(ofType:for:)``
-public final class ModelHealthService: ObservableObject, @unchecked Sendable {
+public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     private let serviceProvider: ModelHealthProvider
 
-    /// Creates a new ModelHealth SDK instance with an API key.
-    ///
-    /// The SDK requires an API key for authentication. Contact support@modelhealth.io
-    /// to obtain one.
+    /// Creates a new ModelHealth SDK instance.
     ///
     /// ```swift
-    /// let service = try ModelHealthService(apiKey: "your-api-key-here")
-    /// let session = try await service.createSession()
+    /// let client = try ModelHealthClient(apiKey: "your-api-key")
+    /// let session = try await client.createSession()
     /// ```
     ///
-    /// - Parameter apiKey: Your ModelHealth API key, available in the dashboard at modelhealth.io
-    /// - Throws: A ``ModelHealthError`` if the API key is empty or invalid
-    public init(apiKey: String) throws {
-        self.serviceProvider = try ModelHealthProviderImpl(apiKey: apiKey)
+    /// - Parameters:
+    ///   - apiKey: Your ModelHealth API key, available in the dashboard at modelhealth.io.
+    ///   - timeout: Per-request timeout in seconds. `nil` keeps the default.
+    ///   - maxRetries: Number of retries on network/server errors. `nil` keeps the default.
+    /// - Throws: A ``ModelHealthError`` if the API key is not valid.
+    public init(apiKey: String, timeout: TimeInterval? = nil, maxRetries: Int? = nil) throws {
+        self.serviceProvider = try ModelHealthProviderImpl(
+            apiKey: apiKey,
+            timeout: timeout,
+            maxRetries: maxRetries
+        )
     }
 
     /// Creates a ModelHealth SDK instance with a custom service provider.
@@ -98,13 +102,30 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///
     /// ```swift
     /// let mock = MockModelHealthProvider()
-    /// let service = ModelHealthService(serviceProvider: mock)
+    /// let client = ModelHealthClient(serviceProvider: mock)
     /// ```
     ///
     /// - Parameter serviceProvider: A custom implementation of ``ModelHealthProvider``,
     ///   typically a mock for unit testing or a custom provider for staging environments.
     public init(serviceProvider: ModelHealthProvider) {
         self.serviceProvider = serviceProvider
+    }
+
+    /// Verifies the API key and returns information about the authenticated account.
+    ///
+    /// A cheap way to check that the API key is valid without performing a domain operation.
+    ///
+    /// ```swift
+    /// let info = try await client.accountInfo()
+    /// print("Authenticated as \(info.email)")
+    /// ```
+    ///
+    /// - Returns: An ``AccountInfo`` with the authenticated account's identity and
+    ///   licensing details.
+    /// - Throws: A ``ModelHealthError`` if the API key is invalid or expired, or on
+    ///   network failure.
+    public func accountInfo() async throws -> AccountInfo {
+        try await serviceProvider.accountInfo()
     }
 
     // MARK: - Data Retrieval
@@ -118,7 +139,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// the QR code image data, then display it on your app to be captured by the ModelHealth mobile app.
     ///
     /// ```swift
-    /// let sessions = try await service.sessionList()
+    /// let sessions = try await client.sessionList()
     /// print("Found \(sessions.count) sessions")
     ///
     /// // Download and display QR code for the first session
@@ -143,7 +164,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// or one whose ID was stored previously.
     ///
     /// ```swift
-    /// let session = try await service.getSession(id: "1f32961c-d2b5-4aae-bc23-3f3db6b31540")
+    /// let session = try await client.getSession(id: "1f32961c-d2b5-4aae-bc23-3f3db6b31540")
     /// print("Activities: \(session.trialsCount)")
     /// ```
     ///
@@ -160,7 +181,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// camera connection or checkerboard calibration.
     ///
     /// ```swift
-    /// let newSession = try await service.newSession(from: previousSession)
+    /// let newSession = try await client.newSession(from: previousSession)
     /// ```
     ///
     /// - Parameter session: The previous, already-calibrated session.
@@ -178,7 +199,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// fetch results for completed activities.
     ///
     /// ```swift
-    /// let activities = try await service.activityList(for: session)
+    /// let activities = try await client.activityList(for: session)
     ///
     /// for activity in activities {
     ///     print("Activity: \(activity.name ?? activity.id)")
@@ -201,7 +222,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// excluded from the result.
     ///
     /// ```swift
-    /// let videoData = await service.videos(for: activity, version: .raw)
+    /// let videoData = await client.videos(for: activity, version: .raw)
     /// for data in videoData {
     ///     // Process video data
     /// }
@@ -223,7 +244,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// failed downloads are silently excluded from results.
     ///
     /// ```swift
-    /// let results = await service.motionData(ofType: [.kinematics(.mot), .animation], for: activity)
+    /// let results = await client.motionData(ofType: [.kinematics(.mot), .animation], for: activity)
     ///
     /// for result in results {
     ///     switch result.resultDataType {
@@ -264,7 +285,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// excluded from results.
     ///
     /// ```swift
-    /// let results = await service.analysisData(ofType: [.metrics, .report, .data], for: activity)
+    /// let results = await client.analysisData(ofType: [.metrics, .report, .data], for: activity)
     ///
     /// for result in results {
     ///     switch result.resultDataType {
@@ -298,7 +319,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// contain demographic information, physical measurements and categorization tags.
     ///
     /// ```swift
-    /// let subjects = try await service.subjectList()
+    /// let subjects = try await client.subjectList()
     /// for subject in subjects {
     ///     print("\(subject.name): \(subject.height ?? 0)cm, \(subject.weight ?? 0)kg")
     /// }
@@ -316,7 +337,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///
     /// ```swift
     /// // First page
-    /// let page1 = try await service.activities(
+    /// let page1 = try await client.activities(
     ///     forSubject: subject.id,
     ///     startIndex: 0,
     ///     count: 20,
@@ -324,7 +345,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// )
     ///
     /// // Next page
-    /// let page2 = try await service.activities(
+    /// let page2 = try await client.activities(
     ///     forSubject: subject.id,
     ///     startIndex: 20,
     ///     count: 20,
@@ -340,7 +361,6 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///   - start: Optional inclusive start date to filter the results to a date range.
     ///   - end: Optional inclusive end date to filter the results to a date range.
     /// - Returns: An array of ``Activity`` objects, or an empty array if none exist.
-    /// - Throws: ``ModelHealthError/notSupported`` if `start` or `end` is set and the service isn't configured for API v2.
     /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func activities(
         forSubject subjectId: Int,
@@ -366,7 +386,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// and current processing status.
     ///
     /// ```swift
-    /// let activity = try await service.fetch(activity: "abc123")
+    /// let activity = try await client.fetch(activity: "abc123")
     /// print("Activity: \(activity.name ?? "Unnamed")")
     /// print("Status: \(activity.status)")
     /// ```
@@ -384,15 +404,15 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// state is returned, so use the result rather than the input going forward.
     ///
     /// ```swift
-    /// var activity = try await service.fetch(activity: "abc123")
+    /// var activity = try await client.fetch(activity: "abc123")
     /// activity.name = "CMJ Baseline Test"
-    /// let updated = try await service.update(activity: activity)
+    /// let updated = try await client.update(activity: activity)
     /// ```
     ///
     /// Pass a ``ActivityConfig`` to apply per-activity settings such as tags:
     ///
     /// ```swift
-    /// let updated = try await service.update(activity: activity, config: ActivityConfig(tags: ["cmj", "baseline"]))
+    /// let updated = try await client.update(activity: activity, config: ActivityConfig(tags: ["cmj", "baseline"]))
     /// ```
     ///
     /// - Parameter activity: The activity to update, with modified properties.
@@ -408,7 +428,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// Permanently removes the activity and all associated videos, results and metadata.
     ///
     /// ```swift
-    /// try await service.delete(activity: activity)
+    /// try await client.delete(activity: activity)
     /// ```
     ///
     /// > Warning: This operation is irreversible.
@@ -425,7 +445,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// assigning them to activities.
     ///
     /// ```swift
-    /// let tags = try await service.activityTags()
+    /// let tags = try await client.activityTags()
     /// for tag in tags {
     ///     print("\(tag.label): \(tag.value)")
     /// }
@@ -449,11 +469,11 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///     height: 180.0,
     ///     birthYear: 1990,
     /// )
-    /// let subject = try await service.createSubject(parameters: params)
+    /// let subject = try await client.createSubject(parameters: params)
     /// print("Created subject with ID: \(subject.id)")
     ///
     /// // Use the subject for calibration
-    /// try await service.calibrateSubject(subject, in: session) { _ in }
+    /// try await client.calibrateSubject(subject, in: session) { _ in }
     /// ```
     ///
     /// - Parameter parameters: The subject's profile details including name and anthropometrics.
@@ -475,7 +495,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// ``configure(session:config:)`` afterwards to override specific settings.
     ///
     /// ```swift
-    /// let session = try await service.createSession()
+    /// let session = try await client.createSession()
     /// ```
     ///
     /// - Returns: A new ``Session`` with a unique identifier.
@@ -491,8 +511,8 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// applied during creation.
     ///
     /// ```swift
-    /// let session = try await service.createSession()
-    /// try await service.configure(session: session, config: SessionConfig(
+    /// let session = try await client.createSession()
+    /// try await client.configure(session: session, config: SessionConfig(
     ///     framerate: .fps60,
     ///     dataSharing: .shareNoData
     /// ))
@@ -522,7 +542,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     ///     squareSize: 35,
     ///     placement: .perpendicular
     /// )
-    /// try await service.calibrateCamera(session, checkerboardDetails: details) { status in
+    /// try await client.calibrateCamera(session, checkerboardDetails: details) { status in
     ///     print(status)
     /// }
     /// ```
@@ -553,7 +573,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// > and fully visible to all cameras for the duration of the recording.
     ///
     /// ```swift
-    /// try await service.calibrateSubject(subject, in: session) { status in
+    /// try await client.calibrateSubject(subject, in: session) { status in
     ///     print(status)
     /// }
     /// ```
@@ -583,9 +603,9 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// Call ``stopRecording(_:)`` when the subject has finished the movement.
     ///
     /// ```swift
-    /// let activity = try await service.startRecording(activityNamed: "cmj", in: session)
+    /// let activity = try await client.startRecording(activityNamed: "cmj", in: session)
     /// // Subject performs movement...
-    /// try await service.stopRecording(session)
+    /// try await client.stopRecording(session)
     /// ```
     ///
     /// - Parameters:
@@ -604,7 +624,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// videos begin uploading and can be tracked with ``activityStatus(for:)``.
     ///
     /// ```swift
-    /// try await service.stopRecording(session)
+    /// try await client.stopRecording(session)
     /// ```
     ///
     /// - Parameter session: The session context to stop recording in.
@@ -619,7 +639,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// Once the status reaches `.ready`, pass the activity to ``startAnalysis(_:for:in:)``.
     ///
     /// ```swift
-    /// let status = try await service.activityStatus(for: activity)
+    /// let status = try await client.activityStatus(for: activity)
     ///
     /// switch status {
     /// case .ready:
@@ -646,13 +666,13 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// returned ``Analysis`` with ``analysisStatus(for:)`` to poll progress.
     ///
     /// ```swift
-    /// let task = try await service.startAnalysis(
+    /// let task = try await client.startAnalysis(
     ///     .counterMovementJump,
     ///     for: activity,
     ///     in: session
     /// )
     ///
-    /// let status = try await service.analysisStatus(for: task)
+    /// let status = try await client.analysisStatus(for: task)
     /// ```
     ///
     /// - Parameters:
@@ -679,7 +699,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// When status reaches `.completed`, download results with ``analysisData(ofType:for:)``.
     ///
     /// ```swift
-    /// let status = try await service.analysisStatus(for: task)
+    /// let status = try await client.analysisStatus(for: task)
     ///
     /// switch status {
     /// case .processing:
@@ -715,7 +735,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// and ``ImportStatus/processing`` values.
     ///
     /// ```swift
-    /// let session = try await service.importSession(
+    /// let session = try await client.importSession(
     ///     activitiesJson,
     ///     subject: subject,
     ///     config: SessionConfig(framerate: .fps60)
@@ -761,14 +781,14 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// archive with ``archiveData(for:)``.
     ///
     /// ```swift
-    /// let archive = try await service.prepareArchive(for: session)
+    /// let archive = try await client.prepareArchive(for: session)
     ///
     /// var status: ArchiveStatus
     /// repeat {
-    ///     status = try await service.archiveStatus(for: archive)
+    ///     status = try await client.archiveStatus(for: archive)
     /// } while status == .processing
     ///
-    /// let zipData = try await service.archiveData(for: archive)
+    /// let zipData = try await client.archiveData(for: archive)
     /// ```
     ///
     /// - Parameters:
@@ -786,7 +806,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// `.ready`, then download the archive with ``archiveData(for:)``.
     ///
     /// ```swift
-    /// let status = try await service.archiveStatus(for: archive)
+    /// let status = try await client.archiveStatus(for: archive)
     ///
     /// switch status {
     /// case .processing:
@@ -811,7 +831,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// managed internally and cached for the lifetime of the service instance.
     ///
     /// ```swift
-    /// let zipData = try await service.archiveData(for: archive)
+    /// let zipData = try await client.archiveData(for: archive)
     /// try zipData.write(to: URL(fileURLWithPath: "session.zip"))
     /// ```
     ///
@@ -830,7 +850,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// organised into groups.
     ///
     /// ```swift
-    /// let metrics = try await service.activityMetrics(for: "activity-uuid")
+    /// let metrics = try await client.activityMetrics(for: "activity-uuid")
     /// for group in metrics.groups {
     ///     for m in group.metrics {
     ///         print("\(m.name): \(m.value ?? 0.0)")
@@ -852,7 +872,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// filtered to a date range.
     ///
     /// ```swift
-    /// let allMetrics = try await service.subjectMetrics(forSubject: 42, start: Date(), end: Date())
+    /// let allMetrics = try await client.subjectMetrics(forSubject: 42, start: Date(), end: Date())
     /// for activityMetrics in allMetrics {
     ///     print(activityMetrics.activityId)
     /// }
@@ -872,7 +892,7 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
     /// Sets the video upload mode
     ///
     /// ```swift
-    /// try await service.setVideoUploadMode(.disabled)
+    /// try await client.setVideoUploadMode(.disabled)
     /// ```
     ///
     /// - Parameter mode: The desired video upload mode.
@@ -886,21 +906,24 @@ public final class ModelHealthService: ObservableObject, @unchecked Sendable {
 ///
 /// Conform to this protocol to create mock implementations for testing.
 ///
-/// See ``ModelHealthService`` for detailed documentation of each method.
+/// See ``ModelHealthClient`` for detailed documentation of each method.
 public protocol ModelHealthProvider {
-    /// See ``ModelHealthService/sessionList()``
+    /// See ``ModelHealthClient/accountInfo()``
+    func accountInfo() async throws -> AccountInfo
+
+    /// See ``ModelHealthClient/sessionList()``
     func sessionList() async throws -> [Session]
 
-    /// See ``ModelHealthService/getSession(id:)``
+    /// See ``ModelHealthClient/getSession(id:)``
     func getSession(id sessionId: String) async throws -> Session
 
-    /// See ``ModelHealthService/newSession(from:)``
+    /// See ``ModelHealthClient/newSession(from:)``
     func newSession(from session: Session) async throws -> Session
 
-    /// See ``ModelHealthService/subjectList()``
+    /// See ``ModelHealthClient/subjectList()``
     func subjectList() async throws -> [Subject]
 
-    /// See ``ModelHealthService/activities(forSubject:startIndex:count:sortedBy:start:end:)``
+    /// See ``ModelHealthClient/activities(forSubject:startIndex:count:sortedBy:start:end:)``
     func activities(
         forSubject subjectId: Int,
         startIndex: Int,
@@ -910,79 +933,79 @@ public protocol ModelHealthProvider {
         end: Date?
     ) async throws -> [Activity]
 
-    /// See ``ModelHealthService/fetch(activity:)``
+    /// See ``ModelHealthClient/fetch(activity:)``
     func fetch(activity activityId: String) async throws -> Activity
 
-    /// See ``ModelHealthService/update(activity:config:)``
+    /// See ``ModelHealthClient/update(activity:config:)``
     func update(activity: Activity, config: ActivityConfig?) async throws -> Activity
 
-    /// See ``ModelHealthService/delete(activity:)``
+    /// See ``ModelHealthClient/delete(activity:)``
     func delete(activity: Activity) async throws
 
-    /// See ``ModelHealthService/activityTags()``
+    /// See ``ModelHealthClient/activityTags()``
     func activityTags() async throws -> [ActivityTag]
 
-    /// See ``ModelHealthService/activityList(for:)``
+    /// See ``ModelHealthClient/activityList(for:)``
     func activityList(for session: Session) async throws -> [Activity]
 
-    /// See ``ModelHealthService/videos(for:version:)``
+    /// See ``ModelHealthClient/videos(for:version:)``
     func videos(for activity: Activity, version: VideoVersion) async -> [Data]
 
-    /// See ``ModelHealthService/motionData(ofType:for:)``
+    /// See ``ModelHealthClient/motionData(ofType:for:)``
     func motionData(ofType types: Set<MotionDataType>, for activity: Activity) async -> [MotionData]
 
-    /// See ``ModelHealthService/addMotionData(_:to:)``
+    /// See ``ModelHealthClient/addMotionData(_:to:)``
     func addMotionData(_ files: [ExternalResultFile], to activity: Activity) async throws -> Activity
 
-    /// See ``ModelHealthService/analysisData(ofType:for:)``
+    /// See ``ModelHealthClient/analysisData(ofType:for:)``
     func analysisData(
         ofType types: Set<AnalysisDataType>,
         for activity: Activity
     ) async -> [AnalysisData]
 
-    /// See ``ModelHealthService/createSession()``
+    /// See ``ModelHealthClient/createSession()``
     func createSession() async throws -> Session
 
-    /// See ``ModelHealthService/configure(session:config:)``
+    /// See ``ModelHealthClient/configure(session:config:)``
     func configure(session: Session, config: SessionConfig) async throws
 
-    /// See ``ModelHealthService/createSubject(parameters:)``
+    /// See ``ModelHealthClient/createSubject(parameters:)``
     func createSubject(parameters: SubjectParameters) async throws -> Subject
 
-    /// See ``ModelHealthService/startRecording(activityNamed:in:config:)``
+    /// See ``ModelHealthClient/startRecording(activityNamed:in:config:)``
     func startRecording(activityNamed name: String, in session: Session, config: ActivityConfig?) async throws -> Activity
 
-    /// See ``ModelHealthService/stopRecording(_:)``
+    /// See ``ModelHealthClient/stopRecording(_:)``
     func stopRecording(_ session: Session) async throws
 
-    /// See ``ModelHealthService/calibrateCamera(_:checkerboardDetails:statusUpdate:)``
+    /// See ``ModelHealthClient/calibrateCamera(_:checkerboardDetails:statusUpdate:)``
     func calibrateCamera(
         _ session: Session,
         checkerboardDetails: CheckerboardDetails,
         statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
     ) async throws
 
-    /// See ``ModelHealthService/calibrateSubject(_:in:statusUpdate:)``
+    /// See ``ModelHealthClient/calibrateSubject(_:in:statusUpdate:)``
     func calibrateSubject(
         _ subject: Subject,
         in session: Session,
         statusUpdate: @escaping @Sendable (CalibrationStatus) -> Void
     ) async throws
 
-    /// See ``ModelHealthService/activityStatus(for:)``
+    /// See ``ModelHealthClient/activityStatus(for:)``
     func activityStatus(for activity: Activity) async throws -> ActivityStatus
 
-    /// See ``ModelHealthService/startAnalysis(_:for:in:)``
+    /// See ``ModelHealthClient/startAnalysis(_:for:in:)``
     func startAnalysis(
         _ activityType: ActivityType,
         for activity: Activity,
         in session: Session
     ) async throws -> Analysis
 
-    /// See ``ModelHealthService/analysisStatus(for:)``
+    /// See ``ModelHealthClient/analysisStatus(for:)``
     func analysisStatus(for task: Analysis) async throws -> AnalysisStatus
 
-    /// See ``ModelHealthService/importSession(_:subject:config:statusUpdate:)``
+    /// See ``ModelHealthClient/importSession(_:subject:config:statusUpdate:)``
     func importSession(
         _ activitiesJson: String,
         subject: Subject,
@@ -990,26 +1013,50 @@ public protocol ModelHealthProvider {
         statusUpdate: @escaping @Sendable (ImportStatus) -> Void
     ) async throws -> Session
 
-    /// See ``ModelHealthService/prepareArchive(for:withVideos:)``
+    /// See ``ModelHealthClient/prepareArchive(for:withVideos:)``
     func prepareArchive(for session: Session, withVideos: Bool) async throws -> Archive
 
-    /// See ``ModelHealthService/archiveStatus(for:)``
+    /// See ``ModelHealthClient/archiveStatus(for:)``
     func archiveStatus(for archive: Archive) async throws -> ArchiveStatus
 
-    /// See ``ModelHealthService/archiveData(for:)``
+    /// See ``ModelHealthClient/archiveData(for:)``
     func archiveData(for archive: Archive) async throws -> Data
 
-    /// See ``ModelHealthService/activityMetrics(for:)``
+    /// See ``ModelHealthClient/activityMetrics(for:)``
     func activityMetrics(for activityId: String) async throws -> ActivityMetrics?
 
-    /// See ``ModelHealthService/subjectMetrics(forSubject:start:end:)``
+    /// See ``ModelHealthClient/subjectMetrics(forSubject:start:end:)``
     func subjectMetrics(forSubject subjectId: Int, start: Date?, end: Date?) async throws -> [ActivityMetrics]
 
-    /// See ``ModelHealthService/setVideoUploadMode(_:)``
+    /// See ``ModelHealthClient/setVideoUploadMode(_:)``
     func setVideoUploadMode(_ mode: VideoUploadMode) async throws
 }
 
-/// Errors thrown by ``ModelHealthService``.
+/// Default implementations for requirements added after this protocol was first published.
+///
+/// Adding a bare requirement here would stop every existing conformer — mocks and test
+/// doubles written against the earlier protocol — from compiling, so each new requirement
+/// ships with a default instead. Conformers that need real behaviour simply implement it;
+/// the defaults exist only so that not implementing one stays a valid, non-breaking choice.
+public extension ModelHealthProvider {
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `accountInfo()` has no account to report.
+    func accountInfo() async throws -> AccountInfo {
+        throw ModelHealthError.internalError(
+            "accountInfo() is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `newSession(from:)` has no session to derive one from.
+    func newSession(from session: Session) async throws -> Session {
+        throw ModelHealthError.internalError(
+            "newSession(from:) is not implemented by \(type(of: self))"
+        )
+    }
+}
+
+/// Errors thrown by ``ModelHealthClient``.
 public enum ModelHealthError: Error, Sendable, Equatable {
     /// Errors specific to camera or subject calibration
     public enum CalibrationError: Sendable, Equatable {
@@ -1052,6 +1099,10 @@ public enum ModelHealthError: Error, Sendable, Equatable {
     /// An error related to data file parsing & converting
     case dataFile(ConversionError)
 
-    /// The requested operation is not supported by this service configuration
+    /// The requested operation is not supported by this client configuration
     case notSupported
 }
+
+/// Deprecated alias for ``ModelHealthClient``.
+@available(*, deprecated, renamed: "ModelHealthClient")
+public typealias ModelHealthService = ModelHealthClient

@@ -41,7 +41,7 @@ public final class View3DController: NSObject, ObservableObject {
     private var pendingExternalData: String?
 
     private let activity: Activity
-    private let service: ModelHealthService
+    private let client: ModelHealthClient
 
     /// The tag an external file was originally uploaded under, if any.
     /// The synced result — tagged `"\(externalDataTag)-sync"` — is what
@@ -52,9 +52,9 @@ public final class View3DController: NSObject, ObservableObject {
     /// `animation` motion data — no separate load step needed. Call ``reload()`` to
     /// retry after a failure. If `externalDataTag` is provided, its synced
     /// result is fetched and loaded alongside the animation data.
-    public init(for activity: Activity, using service: ModelHealthService, externalDataTag: String? = nil) {
+    public init(for activity: Activity, using client: ModelHealthClient, externalDataTag: String? = nil) {
         self.activity = activity
-        self.service = service
+        self.client = client
         self.externalDataTag = externalDataTag
         super.init()
         Task { [weak self] in
@@ -69,7 +69,7 @@ public final class View3DController: NSObject, ObservableObject {
         isLoadingTransforms = true
         lastError = nil
 
-        let results = await service.motionData(ofType: [.animation], for: activity)
+        let results = await client.motionData(ofType: [.animation], for: activity)
         isLoadingTransforms = false
 
         guard let data = results.first?.data else {
@@ -80,7 +80,7 @@ public final class View3DController: NSObject, ObservableObject {
         loadTransforms(data)
 
         if let externalDataTag {
-            let externalResults = await service.motionData(
+            let externalResults = await client.motionData(
                 ofType: [.tagged("\(externalDataTag)-sync", "sto")],
                 for: activity
             )

@@ -5,13 +5,13 @@ import Foundation
 /// A parent container for a movement capture workflow.
 /// Sessions link related entities such as activities and subjects and provide the context used by subsequent operations.
 ///
-/// Create a session with ``ModelHealthService/createSession()`` before performing subsequent operations like camera calibration.
+/// Create a session with ``ModelHealthClient/createSession()`` before performing subsequent operations like camera calibration.
 ///
 /// When connecting or re-connecting to a Session, use the ``qrcode`` URL to retrieve the QR code image for pairing cameras.
 ///
 /// ```swift
-/// let session = try await service.createSession()
-/// try await service.calibrateCamera(session, checkerboardDetails: details)
+/// let session = try await client.createSession()
+/// try await client.calibrateCamera(session, checkerboardDetails: details)
 /// ```
 public struct Session: Identifiable, Sendable {
     public let id: String
@@ -88,6 +88,21 @@ extension Subject: Hashable {
     }
 }
 
+// MARK: - AccountInfo
+
+/// Identity information for the authenticated account.
+///
+/// Returned by ``ModelHealthClient/accountInfo()``.
+public struct AccountInfo: Sendable {
+    public let username: String
+    public let email: String
+    public let firstName: String
+    public let lastName: String
+    public let institution: String?
+    public let profession: String?
+    public let country: String?
+}
+
 /// Parameters for creating a new subject.
 ///
 /// `name`, `weight` and `height` are required.
@@ -100,7 +115,7 @@ extension Subject: Hashable {
 ///     height: 180.0
 /// )
 ///
-/// let subject = try await service.createSubject(parameters: params)
+/// let subject = try await client.createSubject(parameters: params)
 /// ```
 public struct SubjectParameters: Sendable {
     public let name: String
@@ -186,7 +201,7 @@ public enum VideoUploadMode: String, CaseIterable, Sendable {
 /// captured videos and results.
 ///
 /// ```swift
-/// let activities = try await service.activityList(for: session)
+/// let activities = try await client.activityList(for: session)
 /// for activity in activities {
 ///     print("\(activity.name ?? activity.id): \(activity.status)")
 /// }
@@ -225,7 +240,7 @@ public struct Activity: Sendable {
 /// Sort order for activity lists.
 ///
 /// ```swift
-/// let activities = try await service.activities(
+/// let activities = try await client.activities(
 ///     forSubject: subjectId,
 ///     startIndex: 0,
 ///     count: 20,
@@ -243,7 +258,7 @@ public enum ActivitySort: Sendable {
 /// (e.g., `"cmj"`, `"squat"`, `"baseline"`).
 ///
 /// ```swift
-/// let tags = try await service.activityTags()
+/// let tags = try await client.activityTags()
 /// let cmjTag = tags.first { $0.value == "cmj" }
 /// print("CMJ activities: \(cmjTag?.label ?? "")")
 /// ```
@@ -258,13 +273,13 @@ public struct ActivityTag: Sendable {
 ///
 /// ```swift
 /// // Download animation data (JSON only)
-/// let animationData = await service.motionData(ofType: [.animation], for: activity)
+/// let animationData = await client.motionData(ofType: [.animation], for: activity)
 ///
 /// // Download kinematics in MOT format
-/// let motData = await service.motionData(ofType: [.kinematics(.mot)], for: activity)
+/// let motData = await client.motionData(ofType: [.kinematics(.mot)], for: activity)
 ///
 /// // Download kinematics in both MOT and CSV formats
-/// let bothFormats = await service.motionData(ofType: [.kinematics(.mot), .kinematics(.csv)], for: activity)
+/// let bothFormats = await client.motionData(ofType: [.kinematics(.mot), .kinematics(.csv)], for: activity)
 /// ```
 public enum MotionDataType: Hashable, Sendable {
     /// Animation data for visualizing movement analysis results. Always JSON format.
@@ -284,7 +299,7 @@ public enum MotionDataType: Hashable, Sendable {
     case model
 
     /// An arbitrary tagged external file attached to an activity via
-    /// ``ModelHealthService/addMotionData(_:to:)``.
+    /// ``ModelHealthClient/addMotionData(_:to:)``.
     ///
     /// - Parameter tag: The tag string used when the file was uploaded.
     /// - Parameter fileExtension: Bare file extension without a leading dot (e.g. `"csv"`, `"bin"`).
@@ -309,11 +324,11 @@ public enum MotionDataType: Hashable, Sendable {
     }
 }
 
-/// An external file to attach to an activity via ``ModelHealthService/addMotionData(_:to:)``.
+/// An external file to attach to an activity via ``ModelHealthClient/addMotionData(_:to:)``.
 ///
 /// ```swift
 /// let csv = ExternalResultFile(tag: "acme-group-external-data", fileExtension: "csv", data: csvBytes)
-/// let activity = try await service.addMotionData([csv], for: activity)
+/// let activity = try await client.addMotionData([csv], for: activity)
 /// ```
 public struct ExternalResultFile: Sendable {
     /// Identifies the data source.
@@ -366,7 +381,7 @@ extension ExternalResultFile {
 /// implies the file format. Use ``type`` to determine how to parse ``data``.
 ///
 /// ```swift
-/// let results = await service.motionData(ofType: [.kinematics(.mot)], for: activity)
+/// let results = await client.motionData(ofType: [.kinematics(.mot)], for: activity)
 ///
 /// for result in results {
 ///     // result.type identifies both the type and implicit file format
@@ -386,7 +401,7 @@ public struct MotionData: Sendable {
 /// The type of analysis result data to download from an activity with a completed analysis.
 ///
 /// ```swift
-/// let results = await service.analysisData(ofType: [.metrics, .report], for: activity)
+/// let results = await client.analysisData(ofType: [.metrics, .report], for: activity)
 /// ```
 public enum AnalysisDataType: Hashable, Sendable {
     /// Computed biomechanical metrics. Always JSON format.
@@ -404,7 +419,7 @@ public enum AnalysisDataType: Hashable, Sendable {
 /// Use ``type`` to determine how to parse ``data``.
 ///
 /// ```swift
-/// let results = await service.analysisData(ofType: [.metrics, .report, .data], for: activity)
+/// let results = await client.analysisData(ofType: [.metrics, .report, .data], for: activity)
 ///
 /// for result in results {
 ///     switch result.type {
@@ -463,7 +478,7 @@ extension CheckerboardPlacement {
 ///     squareSize: 35,
 ///     placement: .perpendicular
 /// )
-/// try await service.calibrateCamera(session, checkerboardDetails: details)
+/// try await client.calibrateCamera(session, checkerboardDetails: details)
 /// ```
 public struct CheckerboardDetails: Sendable {
     /// Number of internal corner rows. For a 5×6 checkerboard, use `4`.
@@ -492,7 +507,7 @@ public struct CheckerboardDetails: Sendable {
 /// tracking the recording, uploading and processing stages.
 ///
 /// ```swift
-/// try await service.calibrateSubject(
+/// try await client.calibrateSubject(
 ///     subject,
 ///     in: session
 /// ) { status in
@@ -646,7 +661,7 @@ public enum ActivityStatus: Sendable {
 
     /// Analysis has been triggered and is in progress.
     ///
-    /// Pass the associated ``Analysis`` to ``ModelHealthService/analysisStatus(for:)``
+    /// Pass the associated ``Analysis`` to ``ModelHealthClient/analysisStatus(for:)``
     /// to track analysis progress.
     case analyzing(Analysis)
 
@@ -654,9 +669,9 @@ public enum ActivityStatus: Sendable {
     case failed
 }
 
-/// An active analysis returned by ``ModelHealthService/startAnalysis(_:for:in:)``.
+/// An active analysis returned by ``ModelHealthClient/startAnalysis(_:for:in:)``.
 ///
-/// Pass to ``ModelHealthService/analysisStatus(for:)`` to poll for completion.
+/// Pass to ``ModelHealthClient/analysisStatus(for:)`` to poll for completion.
 public struct Analysis: Sendable, Identifiable {
     public let id: String
 }
@@ -675,10 +690,10 @@ public enum AnalysisStatus: Sendable {
 
 // MARK: - Archive
 
-/// An active async archive preparation task returned by ``ModelHealthService/prepareArchive(for:withVideos:)``.
+/// An active async archive preparation task returned by ``ModelHealthClient/prepareArchive(for:withVideos:)``.
 ///
-/// Pass to ``ModelHealthService/archiveStatus(for:)`` to poll for readiness,
-/// then to ``ModelHealthService/archiveData(for:)`` to download the ZIP file.
+/// Pass to ``ModelHealthClient/archiveStatus(for:)`` to poll for readiness,
+/// then to ``ModelHealthClient/archiveData(for:)`` to download the ZIP file.
 public struct Archive: Sendable, Identifiable {
     public let id: String
 }
@@ -699,11 +714,11 @@ public enum ArchiveStatus: Sendable {
 
 /// The current status of a session import.
 ///
-/// Reported during ``ModelHealthService/importSession(_:subject:config:statusUpdate:)``,
+/// Reported during ``ModelHealthClient/importSession(_:subject:config:statusUpdate:)``,
 /// tracking session creation, video upload and processing stages.
 ///
 /// ```swift
-/// try await service.importSession(activitiesJson, subject: subject) { status in
+/// try await client.importSession(activitiesJson, subject: subject) { status in
 ///     switch status {
 ///     case .creatingSession:
 ///         print("Creating session...")
@@ -928,11 +943,11 @@ public struct MetricsGroup: Sendable, Encodable {
 
 /// Metric values for a single activity, organised into groups.
 ///
-/// Retrieve via ``ModelHealthService/activityMetrics(for:)`` or
-/// ``ModelHealthService/subjectMetrics(forSubject:start:end:)``.
+/// Retrieve via ``ModelHealthClient/activityMetrics(for:)`` or
+/// ``ModelHealthClient/subjectMetrics(forSubject:start:end:)``.
 ///
 /// ```swift
-/// let metrics = try await service.activityMetrics(for: "activity-uuid")
+/// let metrics = try await client.activityMetrics(for: "activity-uuid")
 /// for group in metrics.groups {
 ///     for m in group.metrics {
 ///         print("\(m.name): \(m.value ?? 0.0)")
@@ -967,6 +982,38 @@ extension ActivityMetrics {
 }
 
 // MARK: - SwiftUI #Preview support
+
+extension AccountInfo {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var username = "jane_doe"
+        public var email = "jane@example.com"
+        public var firstName = "Jane"
+        public var lastName = "Doe"
+        public var institution: String? = "Acme Lab"
+        public var profession: String? = "Researcher"
+        public var country: String? = "US"
+
+        func build() -> AccountInfo {
+            AccountInfo(
+                username: username,
+                email: email,
+                firstName: firstName,
+                lastName: lastName,
+                institution: institution,
+                profession: profession,
+                country: country
+            )
+        }
+    }
+}
 
 extension Session {
     public static func forPreview(

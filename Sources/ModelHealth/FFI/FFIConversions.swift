@@ -73,6 +73,36 @@ extension Session {
     }
 }
 
+extension AccountInfo {
+    internal static func from(cAccountInfo: CAccountInfo) throws -> AccountInfo {
+        guard let username = cAccountInfo.username else {
+            throw FFIConversionError.nullPointer("AccountInfo username is null")
+        }
+
+        guard let email = cAccountInfo.email else {
+            throw FFIConversionError.nullPointer("AccountInfo email is null")
+        }
+
+        guard let firstName = cAccountInfo.first_name else {
+            throw FFIConversionError.nullPointer("AccountInfo firstName is null")
+        }
+
+        guard let lastName = cAccountInfo.last_name else {
+            throw FFIConversionError.nullPointer("AccountInfo lastName is null")
+        }
+
+        return AccountInfo(
+            username: String(cString: username),
+            email: String(cString: email),
+            firstName: String(cString: firstName),
+            lastName: String(cString: lastName),
+            institution: cAccountInfo.institution.map { String(cString: $0) },
+            profession: cAccountInfo.profession.map { String(cString: $0) },
+            country: cAccountInfo.country.map { String(cString: $0) }
+        )
+    }
+}
+
 extension Subject {
     internal static func from(cSubject: CSubject) throws -> Subject {
         guard let name = cSubject.name else {

@@ -15,16 +15,22 @@ private let metricDateFormatter: DateFormatter = {
 internal final class ModelHealthProviderImpl: ModelHealthProvider {
     private let handle: UnsafeMutablePointer<ModelHealthProviderHandle>
 
-    /// Creates a new provider with the given API key
-    /// - Parameter apiKey: The API key for authentication
+    /// Creates a new provider with the given API key and optional transport overrides.
+    ///
+    /// The backend URL cannot be changed — there is intentionally no base-URL parameter.
+    /// `timeout`/`maxRetries` override the defaults; `nil` keeps them.
     /// - Throws: ModelHealthError if provider creation fails
-    init(apiKey: String) throws {
+    init(apiKey: String, timeout: TimeInterval? = nil, maxRetries: Int? = nil) throws {
         let osVersion = ModelHealthProviderImpl.currentOSVersion()
+        let timeoutSeconds = timeout ?? -1.0
+        let maxRetriesValue = Int32(maxRetries ?? -1)
 
         self.handle = try apiKey.withCString { apiKeyPtr in
             try "swift".withCString { languagePtr in
                 try osVersion.withCString { osVersionPtr in
-                    guard let handle = model_health_provider_new(apiKeyPtr, languagePtr, osVersionPtr) else {
+                    guard let handle = model_health_provider_new(
+                        apiKeyPtr, languagePtr, osVersionPtr, timeoutSeconds, maxRetriesValue
+                    ) else {
                         throw ModelHealthError.internalError("Failed to create provider with API key")
                     }
                     return handle
@@ -35,6 +41,38 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     deinit {
         model_health_provider_free(handle)
+    }
+
+    /// Verifies the API key and returns information about the authenticated account.
+    func accountInfo() async throws -> AccountInfo {
+        try await withCheckedThrowingContinuation { continuation in
+            var cInfo = CAccountInfo(
+                username: nil,
+                email: nil,
+                first_name: nil,
+                last_name: nil,
+                institution: nil,
+                profession: nil,
+                country: nil
+            )
+            let result = model_health_account_info(handle, &cInfo)
+
+            if result.success {
+                do {
+                    let info = try AccountInfo.from(cAccountInfo: cInfo)
+                    model_health_free_account_info(cInfo)
+                    continuation.resume(returning: info)
+                } catch {
+                    model_health_free_account_info(cInfo)
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                model_health_free_account_info(cInfo)
+                handleFFIError(result, continuation: continuation)
+            }
+        }
     }
 
     // MARK: - List Operations

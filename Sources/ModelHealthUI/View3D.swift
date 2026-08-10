@@ -7,8 +7,8 @@ import WebKit
 /// ```swift
 /// @StateObject private var controller: View3DController
 ///
-/// init(activity: Activity, service: ModelHealthService) {
-///     _controller = StateObject(wrappedValue: View3DController(for: activity, using: service))
+/// init(activity: Activity, client: ModelHealthClient) {
+///     _controller = StateObject(wrappedValue: View3DController(for: activity, using: client))
 /// }
 ///
 /// var body: some View {
@@ -35,8 +35,8 @@ public struct View3D: UIViewRepresentable {
 /// ```swift
 /// @StateObject private var controller: View3DController
 ///
-/// init(activity: Activity, service: ModelHealthService) {
-///     _controller = StateObject(wrappedValue: View3DController(for: activity, using: service))
+/// init(activity: Activity, client: ModelHealthClient) {
+///     _controller = StateObject(wrappedValue: View3DController(for: activity, using: client))
 /// }
 ///
 /// var body: some View {

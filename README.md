@@ -22,7 +22,7 @@ Or add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/model-health/model-health-swift", from: "0.8.0")
+    .package(url: "https://github.com/model-health/model-health-swift", from: "0.9.1")
 ]
 ```
 
@@ -31,8 +31,8 @@ dependencies: [
 ```swift
 import ModelHealth
 
-let service = try ModelHealthService(apiKey: "your-api-key")
-let sessions = try await service.getSessions()
+let client = try ModelHealthClient(apiKey: "your-api-key")
+let sessions = try await client.getSessions()
 ```
 
 ## Documentation
