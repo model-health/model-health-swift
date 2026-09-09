@@ -85,7 +85,7 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     /// - Parameters:
     ///   - apiKey: Your ModelHealth API key, available in the dashboard at modelhealth.io.
     ///   - timeout: Per-request timeout in seconds. `nil` keeps the default.
-    ///   - maxRetries: Number of retries on network/server errors. `nil` keeps the default.
+    ///   - maxRetries: Number of retries on transient network or request failures. `nil` keeps the default.
     /// - Throws: A ``ModelHealthError`` if the API key is not valid.
     public init(apiKey: String, timeout: TimeInterval? = nil, maxRetries: Int? = nil) throws {
         self.serviceProvider = try ModelHealthProviderImpl(
@@ -273,7 +273,7 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     ///   - files: The external files to attach, with tag, file extension and data.
     ///   - activity: The activity to attach the files to.
     /// - Returns: The refreshed ``Activity`` containing the newly created ``Activity/Result`` entries.
-    /// - Throws: ``ModelHealthError`` if any upload fails or the server is unreachable.
+    /// - Throws: ``ModelHealthError`` if any upload fails or the network is unavailable.
     public func addMotionData(_ files: [ExternalResultFile], to activity: Activity) async throws -> Activity {
         try await serviceProvider.addMotionData(files, to: activity)
     }
@@ -329,6 +329,23 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
     public func subjectList() async throws -> [Subject] {
         try await serviceProvider.subjectList()
+    }
+
+    /// Retrieves a subject by its ID.
+    ///
+    /// Use this to resolve a subject ID (e.g. from `Session.subject`) into full
+    /// subject details without fetching the entire subject list.
+    ///
+    /// ```swift
+    /// let subject = try await client.fetch(subject: session.subject)
+    /// print("Subject: \(subject.name)")
+    /// ```
+    ///
+    /// - Parameter subjectId: The unique identifier of the subject.
+    /// - Returns: The ``Subject`` with its current details.
+    /// - Throws: A ``ModelHealthError`` if the subject doesn't exist or the request fails.
+    public func fetch(subject subjectId: Int) async throws -> Subject {
+        try await serviceProvider.fetch(subject: subjectId)
     }
 
     /// Retrieves activities for a specific subject with pagination and sorting.
@@ -400,8 +417,8 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
 
     /// Updates an activity.
     ///
-    /// Only mutable fields (such as `name`) are applied on the server. The server-side
-    /// state is returned, so use the result rather than the input going forward.
+    /// Only mutable fields (such as `name`) are applied. The stored state is returned,
+    /// so use the result rather than the input going forward.
     ///
     /// ```swift
     /// var activity = try await client.fetch(activity: "abc123")
@@ -417,7 +434,7 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     ///
     /// - Parameter activity: The activity to update, with modified properties.
     /// - Parameter config: Optional config to apply alongside the update (e.g. tags).
-    /// - Returns: The updated ``Activity`` as stored on the server.
+    /// - Returns: The updated ``Activity`` as stored.
     /// - Throws: A ``ModelHealthError`` if the update fails or the request fails.
     public func update(activity: Activity, config: ActivityConfig? = nil) async throws -> Activity {
         try await serviceProvider.update(activity: activity, config: config)
@@ -776,7 +793,7 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
 
     /// Begins preparing a session archive.
     ///
-    /// Kicks off a server-side task that packages the session data into a ZIP file.
+    /// Packaging the session data into a ZIP file starts in the background.
     /// Poll ``archiveStatus(for:)`` until the status is `.ready`, then download the
     /// archive with ``archiveData(for:)``.
     ///
@@ -847,7 +864,7 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     /// Returns metric values for a single activity.
     ///
     /// Fetches the full set of biomechanical metric values computed for the given activity,
-    /// organised into groups.
+    /// organized into groups.
     ///
     /// ```swift
     /// let metrics = try await client.activityMetrics(for: "activity-uuid")
@@ -860,7 +877,7 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     ///
     /// - Parameter activityId: UUID of the activity.
     /// - Returns: An ``ActivityMetrics`` containing all metric groups and computed values,
-    ///   or `nil` if the activity has not been analysed yet.
+    ///   or `nil` if the activity has not been analyzed yet.
     /// - Throws: A ``ModelHealthError`` on authentication failure or network error.
     public func activityMetrics(for activityId: String) async throws -> ActivityMetrics? {
         try await serviceProvider.activityMetrics(for: activityId)
@@ -922,6 +939,9 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthClient/subjectList()``
     func subjectList() async throws -> [Subject]
+
+    /// See ``ModelHealthClient/fetch(subject:)``
+    func fetch(subject subjectId: Int) async throws -> Subject
 
     /// See ``ModelHealthClient/activities(forSubject:startIndex:count:sortedBy:start:end:)``
     func activities(
@@ -1036,7 +1056,7 @@ public protocol ModelHealthProvider {
 ///
 /// Adding a bare requirement here would stop every existing conformer — mocks and test
 /// doubles written against the earlier protocol — from compiling, so each new requirement
-/// ships with a default instead. Conformers that need real behaviour simply implement it;
+/// ships with a default instead. Conformers that need real behavior simply implement it;
 /// the defaults exist only so that not implementing one stays a valid, non-breaking choice.
 public extension ModelHealthProvider {
     /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
@@ -1054,6 +1074,14 @@ public extension ModelHealthProvider {
             "newSession(from:) is not implemented by \(type(of: self))"
         )
     }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `fetch(subject:)` has no subject to look up.
+    func fetch(subject subjectId: Int) async throws -> Subject {
+        throw ModelHealthError.internalError(
+            "fetch(subject:) is not implemented by \(type(of: self))"
+        )
+    }
 }
 
 /// Errors thrown by ``ModelHealthClient``.
@@ -1064,11 +1092,11 @@ public enum ModelHealthError: Error, Sendable, Equatable {
         case calibrationFailed
     }
 
-    /// HTTP response errors with status codes and optional server message
+    /// Response errors carrying a status code and an optional message
     public enum HTTPError: Sendable, Equatable {
         /// A client error response (400–499).
         case clientError(statusCode: Int)
-        /// A server error response (500–599).
+        /// A failure response (500–599).
         case serverError(statusCode: Int)
         /// A response with an unexpected status code.
         case unexpectedStatusCode(statusCode: Int)
@@ -1087,10 +1115,10 @@ public enum ModelHealthError: Error, Sendable, Equatable {
     /// Errors that occur during calibration
     case calibration(CalibrationError)
 
-    /// HTTP response errors
+    /// Response errors with a status code
     case http(HTTPError)
 
-    /// Unexpected response from the server
+    /// An unexpected response
     case unexpectedResponse
 
     /// An internal SDK error occurred

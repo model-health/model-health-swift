@@ -43,6 +43,26 @@ private func parseFFIDate(_ cString: UnsafePointer<CChar>?, fieldName: String) t
     return date
 }
 
+/// Parses an FFI timestamp string that may legitimately be absent. `nil` for a null
+/// pointer; throws if a non-null pointer holds a malformed date, same as
+/// `parseFFIDate`.
+private func parseOptionalFFIDate(_ cString: UnsafePointer<CChar>?, fieldName: String) throws -> Date? {
+    guard let cString else {
+        return nil
+    }
+    return try parseFFIDate(cString, fieldName: fieldName)
+}
+
+/// Decodes an FFI JSON-encoded string array, e.g. `["cmj","baseline"]`. Empty for a
+/// null pointer or malformed JSON — mirrors how `Activity.tags` is decoded.
+private func parseFFIStringArray(_ cString: UnsafePointer<CChar>?) -> [String] {
+    guard let cString else {
+        return []
+    }
+    let json = String(cString: cString)
+    return (try? JSONDecoder().decode([String].self, from: Data(json.utf8))) ?? []
+}
+
 extension Session {
     internal static func from(cSession: CSession) throws -> Session {
         guard let id = cSession.id else {
@@ -120,9 +140,16 @@ extension Subject {
             height: cSubject.height == 0.0 ? nil : cSubject.height,
             age: cSubject.age == -1 ? nil : Int(cSubject.age),
             birthYear: cSubject.birth_year == 0 ? nil : Int(cSubject.birth_year),
-            gender: genderFromI32(cSubject.gender),
-            sexAtBirth: sexFromI32(cSubject.sex_at_birth),
-            characteristics: String(cString: characteristics)
+            gender: optionalGenderFromI32(cSubject.gender),
+            sexAtBirth: optionalSexFromI32(cSubject.sex_at_birth),
+            characteristics: String(cString: characteristics),
+            firstName: cSubject.first_name.map { String(cString: $0) },
+            lastName: cSubject.last_name.map { String(cString: $0) },
+            tags: parseFFIStringArray(cSubject.tags),
+            activityCount: cSubject.activity_count == -1 ? nil : Int(cSubject.activity_count),
+            lastActivity: try parseOptionalFFIDate(cSubject.last_activity, fieldName: "Subject lastActivity"),
+            createdAt: try parseOptionalFFIDate(cSubject.created_at, fieldName: "Subject createdAt"),
+            updatedAt: try parseOptionalFFIDate(cSubject.updated_at, fieldName: "Subject updatedAt")
         )
     }
 }
@@ -189,12 +216,17 @@ extension Activity {
             }
         }
 
-        let tags: [String]
-        if let tagsPtr = cTrial.tags {
-            let json = String(cString: tagsPtr)
-            tags = (try? JSONDecoder().decode([String].self, from: Data(json.utf8))) ?? []
+        let tags = parseFFIStringArray(cTrial.tags)
+
+        let activityType: ActivityTypeInfo?
+        if cTrial.activity_type_id == -1 {
+            activityType = nil
         } else {
-            tags = []
+            activityType = ActivityTypeInfo(
+                id: Int(cTrial.activity_type_id),
+                name: cTrial.activity_type_name.map { String(cString: $0) } ?? "",
+                displayName: cTrial.activity_type_display_name.map { String(cString: $0) } ?? ""
+            )
         }
 
         return Activity(
@@ -204,8 +236,12 @@ extension Activity {
             status: String(cString: status),
             videos: videos,
             results: results,
-            activityType: ActivityType(cValue: cTrial.activity_type),
+            activityType: activityType,
             tags: tags,
+            notes: cTrial.notes.map { String(cString: $0) },
+            createdBy: cTrial.created_by.map { String(cString: $0) },
+            analysisStatus: cTrial.analysis_status.map { String(cString: $0) },
+            trashed: cTrial.trashed,
             createdAt: try parseFFIDate(cTrial.created_at, fieldName: "Activity createdAt"),
             updatedAt: try parseFFIDate(cTrial.updated_at, fieldName: "Activity updatedAt")
         )
@@ -398,6 +434,17 @@ private func sexFromI32(_ value: Int32) -> Subject.Sex {
     default:
         .noResponse
     }
+}
+
+/// Like `genderFromI32`, but -1 (not reported / not recognized) stays `nil` instead
+/// of collapsing into `.noResponse`.
+private func optionalGenderFromI32(_ value: Int32) -> Subject.Gender? {
+    value == -1 ? nil : genderFromI32(value)
+}
+
+/// See `optionalGenderFromI32`.
+private func optionalSexFromI32(_ value: Int32) -> Subject.Sex? {
+    value == -1 ? nil : sexFromI32(value)
 }
 
 extension Subject.Gender {
@@ -786,7 +833,7 @@ private enum CodableImportStatus: Decodable {
     }
 
     init(from decoder: Decoder) throws {
-        // Try single-value (unit variants serialised as plain strings)
+        // Try single-value (unit variants serialized as plain strings)
         if let single = try? decoder.singleValueContainer(),
            let string = try? single.decode(String.self)
         {

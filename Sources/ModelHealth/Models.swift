@@ -21,6 +21,8 @@ public struct Session: Identifiable, Sendable {
     public let sessionName: String
     public let qrcode: String?
     public let activities: [Activity]
+    /// ID of the subject this session belongs to, if assigned. A bare ID, not a
+    /// ``Subject`` object.
     public let subject: Int?
     public let activitiesCount: Int
     public let createdAt: Date
@@ -74,12 +76,39 @@ public struct Subject: Identifiable, Sendable {
     /// Year of birth.
     public let birthYear: Int?
 
-    public let gender: Gender
+    /// Gender identity as reported, or `nil` if the subject declined to answer or
+    /// no value is available.
+    public let gender: Gender?
 
-    public let sexAtBirth: Sex
+    /// Sex assigned at birth as reported, or `nil` if the subject declined to
+    /// answer or no value is available.
+    public let sexAtBirth: Sex?
 
     /// Freeform text describing relevant characteristics or medical conditions.
     public let characteristics: String
+
+    /// Given name, if reported. Not always available.
+    public let firstName: String?
+
+    /// Family name, if reported. Not always available.
+    public let lastName: String?
+
+    /// Tags attached to the subject.
+    public let tags: [String]
+
+    /// Number of activities recorded, excluding calibration and neutral trials, or
+    /// `nil` if not reported.
+    public let activityCount: Int?
+
+    /// Timestamp of the subject's most recent activity, or `nil` if they have none,
+    /// or if not reported.
+    public let lastActivity: Date?
+
+    /// When this subject record was created, or `nil` if not reported.
+    public let createdAt: Date?
+
+    /// When this subject record was last modified, or `nil` if not reported.
+    public let updatedAt: Date?
 }
 
 extension Subject: Hashable {
@@ -215,7 +244,7 @@ public struct Activity: Sendable {
         public let media: String?
     }
 
-    /// The processing status of an activity on the server.
+    /// The processing status of an activity.
     public enum Status: Sendable {
         case done
         case error
@@ -224,15 +253,29 @@ public struct Activity: Sendable {
     }
 
     public let id: String
+    /// ID of the parent session. A bare ID, not a ``Session`` object.
     public let session: String
     public let name: String?
     public let status: String
     public let videos: [Video]
     public let results: [Result]
-    /// The activity type associated with this recording, if one was set.
-    public let activityType: ActivityType?
+    /// The activity type as reported, if one was set.
+    ///
+    /// Carries `{id, name, displayName}` through unchanged — including a type this
+    /// SDK build doesn't recognize.
+    public let activityType: ActivityTypeInfo?
     /// Tags applied to this activity.
     public let tags: [String]
+    /// Free-text notes attached to the activity, if any.
+    public let notes: String?
+    /// Username of the account that owns the parent session, if known.
+    public let createdBy: String?
+    /// State of the analysis pipeline: `"processing"`, `"done"`, `"error"`, or `nil`
+    /// when this activity was not loaded through a path that reports it (for
+    /// example, nested inside a session).
+    public let analysisStatus: String?
+    /// Whether the activity is in the trash.
+    public let trashed: Bool
     public let createdAt: Date
     public let updatedAt: Date
 }
@@ -263,7 +306,7 @@ public enum ActivitySort: Sendable {
 /// print("CMJ activities: \(cmjTag?.label ?? "")")
 /// ```
 public struct ActivityTag: Sendable {
-    /// The API value used to identify the tag.
+    /// Machine-readable tag identifier.
     public let value: String
     /// The human-readable display label.
     public let label: String
@@ -534,7 +577,7 @@ public enum CalibrationStatus: Sendable {
     ///   - total: The total number of videos expected from all cameras.
     case uploading(uploaded: Int, total: Int)
 
-    /// The server is processing the uploaded videos.
+    /// The uploaded videos are being processed.
     ///
     /// - Parameter percent: The processing completion percentage (0-100), or `nil` if
     ///   processing has not yet started or progress is unavailable.
@@ -542,6 +585,19 @@ public enum CalibrationStatus: Sendable {
 
     /// Calibration has completed successfully.
     case done
+}
+
+/// The activity type as reported, carrying `{id, name, displayName}` through
+/// unchanged — including a type this SDK build doesn't otherwise recognize.
+public struct ActivityTypeInfo: Sendable, Equatable {
+    /// Database id of the activity-type record.
+    public let id: Int
+
+    /// Machine name, e.g. `"counter_movement_jump"`.
+    public let name: String
+
+    /// Human-readable label, e.g. `"Counter Movement Jump"`.
+    public let displayName: String
 }
 
 /// Available analysis types for motion capture activities.
@@ -730,7 +786,7 @@ public enum ArchiveStatus: Sendable {
 /// }
 /// ```
 public enum ImportStatus: Sendable {
-    /// A new session is being created on the server.
+    /// A new session is being created.
     case creatingSession
 
     /// The session was created successfully.
@@ -738,7 +794,7 @@ public enum ImportStatus: Sendable {
     /// - Parameter sessionId: The ID of the newly created session.
     case createdSession(sessionId: String)
 
-    /// A video is being uploaded to the server.
+    /// A video is being uploaded.
     ///
     /// - Parameters:
     ///   - trial: The name of the trial whose video is being uploaded.
@@ -746,7 +802,7 @@ public enum ImportStatus: Sendable {
     ///   - total: The total number of videos to upload.
     case uploadingVideo(trial: String, uploaded: Int, total: Int)
 
-    /// Videos have been uploaded and the server is processing the trial.
+    /// Videos have been uploaded and the trial is being processed.
     case processing
 }
 
@@ -772,11 +828,11 @@ public enum SessionFramerate: CaseIterable, Sendable {
 public enum SessionOpenSimModel: CaseIterable, Sendable {
     /// Full-body model with 33 degrees of freedom plus a 6-DoF shoulder
     /// complex with a scapulothoracic body and a glenohumeral joint using the
-    /// ISB-recommended Y-X-Y rotation sequence. Default.
+    /// ISB-recommended Y-X-Y rotation sequence.
     case laiUhlrich2022Shoulder
 
     /// Same full-body model as ``laiUhlrich2022Shoulder`` without the ISB
-    /// shoulder complex.
+    /// shoulder complex. Default.
     case laiUhlrich2022
 }
 
@@ -806,13 +862,13 @@ public enum SessionCoreEngine: CaseIterable, Sendable {
 
 /// Frequency of the low-pass filter applied to kinematic results.
 ///
-/// The server applies a low-pass Butterworth filter to 2D video keypoints.
+/// A low-pass Butterworth filter is applied to 2D video keypoints.
 /// The specified frequency applies to all motion trials in the session.
 /// Per the Nyquist theorem the value must be less than half the session
-/// framerate; if it exceeds that the server clamps it automatically.
+/// framerate; a higher value is clamped automatically.
 public enum FilterFrequency: Sendable {
-    /// Let the server choose the optimal filter frequency (default).
-    /// The server uses 20 Hz by default.
+    /// Use the automatically chosen optimal filter frequency (default).
+    /// Usually 20 Hz.
     case `default`
 
     /// A specific frequency in Hz.
@@ -821,7 +877,7 @@ public enum FilterFrequency: Sendable {
 
 /// Data-sharing preference for a session.
 ///
-/// Session data and videos are uploaded to a secure cloud server for
+/// Session data and videos are uploaded securely to Model Health for
 /// processing. This setting controls what Model Health can use for internal
 /// development. Identified videos contain original footage with faces
 /// unblurred; de-identified videos have faces blurred. Processed data
@@ -842,7 +898,7 @@ public enum SessionDataSharing: CaseIterable, Sendable {
 
 /// Settings applied to a session before calibration and recording.
 ///
-/// All fields have sensible defaults. Use the no-argument initialiser or
+/// All fields have sensible defaults. Use the no-argument initializer or
 /// ``default`` for a fully default configuration, then override only what
 /// you need:
 ///
@@ -857,7 +913,7 @@ public struct SessionConfig: Sendable {
     /// Camera frame rate. Default: `.fps120`.
     public var framerate: SessionFramerate
 
-    /// OpenSim musculoskeletal model. Default: `.laiUhlrich2022Shoulder`.
+    /// OpenSim musculoskeletal model. Default: `.laiUhlrich2022`.
     public var opensimModel: SessionOpenSimModel
 
     /// Pose used for subject scaling. Default: `.uprightStandingPose`.
@@ -866,7 +922,7 @@ public struct SessionConfig: Sendable {
     /// Core processing engine version. Default: `.v1_0`.
     public var coreEngine: SessionCoreEngine
 
-    /// Low-pass filter frequency. Default: `.default` (server-chosen).
+    /// Low-pass filter frequency. Default: `.default` (chosen automatically).
     public var filterFrequency: FilterFrequency
 
     /// Data-sharing preference. Default: `.shareProcessedDataAndIdentifiedVideos`.
@@ -874,7 +930,7 @@ public struct SessionConfig: Sendable {
 
     public init(
         framerate: SessionFramerate = .fps120,
-        opensimModel: SessionOpenSimModel = .laiUhlrich2022Shoulder,
+        opensimModel: SessionOpenSimModel = .laiUhlrich2022,
         scalingSetup: SessionScalingSetup = .uprightStandingPose,
         coreEngine: SessionCoreEngine = .v1_0,
         filterFrequency: FilterFrequency = .default,
@@ -941,7 +997,7 @@ public struct MetricsGroup: Sendable, Encodable {
     public let metrics: [Metric]
 }
 
-/// Metric values for a single activity, organised into groups.
+/// Metric values for a single activity, organized into groups.
 ///
 /// Retrieve via ``ModelHealthClient/activityMetrics(for:)`` or
 /// ``ModelHealthClient/subjectMetrics(forSubject:start:end:)``.
@@ -967,7 +1023,7 @@ public struct ActivityMetrics: Sendable, Encodable {
 }
 
 extension ActivityMetrics {
-    /// Serialises these metrics to a JSON string (snake_case keys, matching the wire format).
+    /// Serializes these metrics to a JSON string (snake_case keys, matching the wire format).
     public func jsonString(prettyPrinted: Bool = true) throws -> String {
         let encoder = JSONEncoder()
         if prettyPrinted {
@@ -1071,9 +1127,16 @@ extension Subject {
         public var height: Double? = 180.0
         public var age: Int? = 42
         public var birthYear: Int? = 1983
-        public var gender: Subject.Gender = .man
-        public var sexAtBirth: Subject.Sex = .man
+        public var gender: Subject.Gender? = .man
+        public var sexAtBirth: Subject.Sex? = .man
         public var characteristics = ""
+        public var firstName: String?
+        public var lastName: String?
+        public var tags: [String] = []
+        public var activityCount: Int?
+        public var lastActivity: Date?
+        public var createdAt: Date?
+        public var updatedAt: Date?
 
         func build() -> Subject {
             Subject(
@@ -1085,7 +1148,14 @@ extension Subject {
                 birthYear: birthYear,
                 gender: gender,
                 sexAtBirth: sexAtBirth,
-                characteristics: characteristics
+                characteristics: characteristics,
+                firstName: firstName,
+                lastName: lastName,
+                tags: tags,
+                activityCount: activityCount,
+                lastActivity: lastActivity,
+                createdAt: createdAt,
+                updatedAt: updatedAt
             )
         }
     }
@@ -1134,8 +1204,12 @@ extension Activity {
         public var status: String = "done"
         public var videos: [Video] = []
         public var results: [Activity.Result] = []
-        public var activityType: ActivityType?
+        public var activityType: ActivityTypeInfo?
         public var tags: [String] = []
+        public var notes: String?
+        public var createdBy: String?
+        public var analysisStatus: String?
+        public var trashed = false
         public var createdAt = Date()
         public var updatedAt = Date()
 
@@ -1149,6 +1223,10 @@ extension Activity {
                 results: results,
                 activityType: activityType,
                 tags: tags,
+                notes: notes,
+                createdBy: createdBy,
+                analysisStatus: analysisStatus,
+                trashed: trashed,
                 createdAt: createdAt,
                 updatedAt: updatedAt
             )

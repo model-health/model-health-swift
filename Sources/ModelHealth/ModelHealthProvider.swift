@@ -17,7 +17,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     /// Creates a new provider with the given API key and optional transport overrides.
     ///
-    /// The backend URL cannot be changed — there is intentionally no base-URL parameter.
+    /// The service URL is fixed and cannot be changed — there is intentionally no base-URL parameter.
     /// `timeout`/`maxRetries` override the defaults; `nil` keeps them.
     /// - Throws: ModelHealthError if provider creation fails
     init(apiKey: String, timeout: TimeInterval? = nil, maxRetries: Int? = nil) throws {
@@ -197,6 +197,29 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     }
                     continuation.resume(returning: subjects)
                 } catch {
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
+    func fetch(subject subjectId: Int) async throws -> Subject {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSubject = CSubject.emptySubject()
+
+            let result = model_health_fetch_subject(handle, Int32(subjectId), &cSubject)
+
+            if result.success {
+                do {
+                    let subject = try Subject.from(cSubject: cSubject)
+                    freeSubjectFields(cSubject)
+                    continuation.resume(returning: subject)
+                } catch {
+                    freeSubjectFields(cSubject)
                     continuation.resume(
                         throwing: ModelHealthError.internalError(error.localizedDescription)
                     )
@@ -784,11 +807,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     func createSubject(parameters: SubjectParameters) async throws -> Subject {
         try await withCheckedThrowingContinuation { continuation in
-            var cSubject = CSubject(
-                id: 0, name: nil, weight: 0, height: 0,
-                age: 0, birth_year: 0, gender: 0, sex_at_birth: 0,
-                characteristics: nil
-            )
+            var cSubject = CSubject.emptySubject()
 
             let result = parameters.name.withCString { name in
                 model_health_create_subject(
@@ -1462,11 +1481,19 @@ private extension ModelHealthProviderImpl {
         session.name.map { model_health_free_string($0) }
         session.session_name.map { model_health_free_string($0) }
         session.qrcode.map { model_health_free_string($0) }
+        session.created_at.map { model_health_free_string($0) }
+        session.updated_at.map { model_health_free_string($0) }
     }
 
     func freeSubjectFields(_ subject: CSubject) {
         subject.name.map { model_health_free_string($0) }
         subject.characteristics.map { model_health_free_string($0) }
+        subject.first_name.map { model_health_free_string($0) }
+        subject.last_name.map { model_health_free_string($0) }
+        subject.tags.map { model_health_free_string($0) }
+        subject.last_activity.map { model_health_free_string($0) }
+        subject.created_at.map { model_health_free_string($0) }
+        subject.updated_at.map { model_health_free_string($0) }
     }
 
     func freeTrialFields(_ trial: CTrial) {
@@ -1475,6 +1502,13 @@ private extension ModelHealthProviderImpl {
         trial.name.map { model_health_free_string($0) }
         trial.status.map { model_health_free_string($0) }
         trial.tags.map { model_health_free_string($0) }
+        trial.created_at.map { model_health_free_string($0) }
+        trial.updated_at.map { model_health_free_string($0) }
+        trial.activity_type_name.map { model_health_free_string($0) }
+        trial.activity_type_display_name.map { model_health_free_string($0) }
+        trial.notes.map { model_health_free_string($0) }
+        trial.created_by.map { model_health_free_string($0) }
+        trial.analysis_status.map { model_health_free_string($0) }
         model_health_free_video_array(trial.videos)
         model_health_free_trial_result_array(trial.results)
     }
@@ -1519,6 +1553,32 @@ private extension ModelHealthProviderImpl {
     }
 }
 
+private extension CSubject {
+    /// A zeroed buffer for the C layer to write a subject into. Numeric fields carry
+    /// the sentinel that stands for an absent value, so a partially written struct
+    /// decodes as "not reported" rather than as real data.
+    static func emptySubject() -> CSubject {
+        return CSubject(
+            id: 0,
+            name: nil,
+            weight: 0,
+            height: 0,
+            age: -1,
+            birth_year: 0,
+            gender: -1,
+            sex_at_birth: -1,
+            characteristics: nil,
+            first_name: nil,
+            last_name: nil,
+            tags: nil,
+            activity_count: -1,
+            last_activity: nil,
+            created_at: nil,
+            updated_at: nil
+        )
+    }
+}
+
 private extension CTrial {
     static func emptyTrial() -> CTrial {
         return CTrial(
@@ -1528,10 +1588,16 @@ private extension CTrial {
             status: nil,
             videos: CVideoArray(videos: nil, count: 0),
             results: CTrialResultArray(results: nil, count: 0),
-            activity_type: -1,
             tags: nil,
             created_at: nil,
-            updated_at: nil
+            updated_at: nil,
+            activity_type_id: -1,
+            activity_type_name: nil,
+            activity_type_display_name: nil,
+            notes: nil,
+            created_by: nil,
+            analysis_status: nil,
+            trashed: false
         )
     }
 }
