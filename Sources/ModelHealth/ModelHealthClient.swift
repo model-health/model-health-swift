@@ -56,7 +56,10 @@ import Foundation
 /// ## Topics
 ///
 /// ### Data Retrieval
-/// - ``subjectList()``
+/// - ``activities``
+/// - ``subjects``
+/// - ``sessions``
+/// - ``groups``
 /// - ``activityList(for:)``
 ///
 /// ### Session & Calibration
@@ -109,6 +112,32 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     ///   typically a mock for unit testing or a custom provider for staging environments.
     public init(serviceProvider: ModelHealthProvider) {
         self.serviceProvider = serviceProvider
+    }
+
+    /// Filtered access to activities.
+    ///
+    /// ```swift
+    /// for try await activity in client.activities.list(subject: subject) {
+    ///     print(activity.name ?? activity.id)
+    /// }
+    /// ```
+    public var activities: ActivitiesResource {
+        ActivitiesResource(provider: serviceProvider)
+    }
+
+    /// Filtered access to subjects.
+    public var subjects: SubjectsResource {
+        SubjectsResource(provider: serviceProvider)
+    }
+
+    /// Filtered access to sessions.
+    public var sessions: SessionsResource {
+        SessionsResource(provider: serviceProvider)
+    }
+
+    /// Filtered access to subject groups.
+    public var groups: GroupsResource {
+        GroupsResource(provider: serviceProvider)
     }
 
     /// Verifies the API key and returns information about the authenticated account.
@@ -313,24 +342,6 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
 
     // MARK: - Subject Management
 
-    /// Retrieves all subjects associated with the API key.
-    ///
-    /// Subjects represent individuals being monitored or assessed. Each subject may
-    /// contain demographic information, physical measurements and categorization tags.
-    ///
-    /// ```swift
-    /// let subjects = try await client.subjectList()
-    /// for subject in subjects {
-    ///     print("\(subject.name): \(subject.height ?? 0)cm, \(subject.weight ?? 0)kg")
-    /// }
-    /// ```
-    ///
-    /// - Returns: An array of ``Subject`` objects, or an empty array if none exist.
-    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
-    public func subjectList() async throws -> [Subject] {
-        try await serviceProvider.subjectList()
-    }
-
     /// Retrieves a subject by its ID.
     ///
     /// Use this to resolve a subject ID (e.g. from `Session.subject`) into full
@@ -346,55 +357,6 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     /// - Throws: A ``ModelHealthError`` if the subject doesn't exist or the request fails.
     public func fetch(subject subjectId: Int) async throws -> Subject {
         try await serviceProvider.fetch(subject: subjectId)
-    }
-
-    /// Retrieves activities for a specific subject with pagination and sorting.
-    ///
-    /// Use this to display a subject's activity history or implement paginated list interfaces.
-    ///
-    /// ```swift
-    /// // First page
-    /// let page1 = try await client.activities(
-    ///     forSubject: subject.id,
-    ///     startIndex: 0,
-    ///     count: 20,
-    ///     sortedBy: .updatedAt
-    /// )
-    ///
-    /// // Next page
-    /// let page2 = try await client.activities(
-    ///     forSubject: subject.id,
-    ///     startIndex: 20,
-    ///     count: 20,
-    ///     sortedBy: .updatedAt
-    /// )
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - subjectId: The ID of the subject whose activities to retrieve.
-    ///   - startIndex: Zero-based index to start from. Use `0` for the first page.
-    ///   - count: Number of activities to retrieve per request.
-    ///   - sort: Sort order for the results (e.g., `.updatedAt` for most recent first).
-    ///   - start: Optional inclusive start date to filter the results to a date range.
-    ///   - end: Optional inclusive end date to filter the results to a date range.
-    /// - Returns: An array of ``Activity`` objects, or an empty array if none exist.
-    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
-    public func activities(
-        forSubject subjectId: Int,
-        startIndex: Int,
-        count: Int,
-        sortedBy sort: ActivitySort,
-        start: Date? = nil,
-        end: Date? = nil
-    ) async throws -> [Activity] {
-        try await serviceProvider.activities(
-            forSubject: subjectId,
-            startIndex: startIndex,
-            count: count,
-            sortedBy: sort,
-            start: start,
-            end: end
-        )
     }
 
     /// Retrieves an activity by its ID.
@@ -917,6 +879,40 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     public func setVideoUploadMode(_ mode: VideoUploadMode) async throws {
         try await serviceProvider.setVideoUploadMode(mode)
     }
+
+    /// Adjusts the log level without touching the registered handler.
+    ///
+    /// ```swift
+    /// try client.setLogLevel(.warn)
+    /// ```
+    ///
+    /// - Parameter level: How verbose the log event stream should be.
+    /// - Throws: A ``ModelHealthError`` if the level cannot be applied.
+    public func setLogLevel(_ level: LogLevel) throws {
+        try serviceProvider.setLogLevel(level)
+    }
+
+    /// Registers or clears the persistent log handler.
+    ///
+    /// Passing `nil` for the handler clears it regardless of `level`.
+    ///
+    /// ```swift
+    /// client.setLogHandler(level: .warn) { event in
+    ///     print("[modelhealth] \(event.code): \(event.message)")
+    /// }
+    ///
+    /// // Stop receiving events
+    /// try client.setLogHandler(nil)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - level: How verbose the log event stream should be. Ignored when `handler` is `nil`.
+    ///   - handler: Called with a ``LogEvent`` for each event at or below `level`. Pass `nil`
+    ///     to stop receiving events.
+    /// - Throws: A ``ModelHealthError`` if the handler cannot be registered.
+    public func setLogHandler(level: LogLevel = .info, _ handler: (@Sendable (LogEvent) -> Void)?) throws {
+        try serviceProvider.setLogHandler(level: level, handler)
+    }
 }
 
 /// Defines ModelHealth SDK operations for dependency injection and testing.
@@ -928,6 +924,40 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthClient/accountInfo()``
     func accountInfo() async throws -> AccountInfo
 
+    /// Opens a filtered sequence of activities.
+    ///
+    /// `filterJSON` is the filter as a JSON object; `activityTypeCode` is the activity-type
+    /// discriminant, or a negative value to leave it unset. `limit` caps how many items the
+    /// sequence yields in total; `nil` yields every match.
+    func activitiesStream(
+        filterJSON: String,
+        activityTypeCode: Int32,
+        orderBy: String?,
+        limit: Int?
+    ) -> ActivityStream
+
+    /// Opens a filtered sequence of subjects. See ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    func subjectsStream(
+        filterJSON: String,
+        activityTypeCode: Int32,
+        orderBy: String?,
+        limit: Int?
+    ) -> SubjectStream
+
+    /// Opens a filtered sequence of sessions. See ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    func sessionsStream(
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> SessionStream
+
+    /// Opens a filtered sequence of subject groups. See ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    func groupsStream(
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> GroupStream
+
     /// See ``ModelHealthClient/sessionList()``
     func sessionList() async throws -> [Session]
 
@@ -937,21 +967,8 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthClient/newSession(from:)``
     func newSession(from session: Session) async throws -> Session
 
-    /// See ``ModelHealthClient/subjectList()``
-    func subjectList() async throws -> [Subject]
-
     /// See ``ModelHealthClient/fetch(subject:)``
     func fetch(subject subjectId: Int) async throws -> Subject
-
-    /// See ``ModelHealthClient/activities(forSubject:startIndex:count:sortedBy:start:end:)``
-    func activities(
-        forSubject subjectId: Int,
-        startIndex: Int,
-        count: Int,
-        sortedBy sort: ActivitySort,
-        start: Date?,
-        end: Date?
-    ) async throws -> [Activity]
 
     /// See ``ModelHealthClient/fetch(activity:)``
     func fetch(activity activityId: String) async throws -> Activity
@@ -1050,6 +1067,12 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthClient/setVideoUploadMode(_:)``
     func setVideoUploadMode(_ mode: VideoUploadMode) async throws
+
+    /// See ``ModelHealthClient/setLogLevel(_:)``
+    func setLogLevel(_ level: LogLevel) throws
+
+    /// See ``ModelHealthClient/setLogHandler(level:_:)``
+    func setLogHandler(level: LogLevel, _ handler: (@Sendable (LogEvent) -> Void)?) throws
 }
 
 /// Default implementations for requirements added after this protocol was first published.
@@ -1080,6 +1103,67 @@ public extension ModelHealthProvider {
     func fetch(subject subjectId: Int) async throws -> Subject {
         throw ModelHealthError.internalError(
             "fetch(subject:) is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Returns a sequence that reports ``ModelHealthError/internalError(_:)`` when read, as
+    /// a conformer that has not implemented `activitiesStream(...)` has nothing to read.
+    ///
+    /// Opening is not a throwing call, so an unimplemented one cannot report at the call —
+    /// it reports at the first read instead.
+    func activitiesStream(
+        filterJSON: String,
+        activityTypeCode: Int32,
+        orderBy: String?,
+        limit: Int?
+    ) -> ActivityStream {
+        ActivityStream(reader: ItemReader(source: notImplemented("activitiesStream", by: self)))
+    }
+
+    /// Returns a sequence that reports ``ModelHealthError/internalError(_:)`` when read. See
+    /// ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    func subjectsStream(
+        filterJSON: String,
+        activityTypeCode: Int32,
+        orderBy: String?,
+        limit: Int?
+    ) -> SubjectStream {
+        SubjectStream(reader: ItemReader(source: notImplemented("subjectsStream", by: self)))
+    }
+
+    /// Returns a sequence that reports ``ModelHealthError/internalError(_:)`` when read. See
+    /// ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    func sessionsStream(
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> SessionStream {
+        SessionStream(reader: ItemReader(source: notImplemented("sessionsStream", by: self)))
+    }
+
+    /// Returns a sequence that reports ``ModelHealthError/internalError(_:)`` when read. See
+    /// ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    func groupsStream(
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> GroupStream {
+        GroupStream(reader: ItemReader(source: notImplemented("groupsStream", by: self)))
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `setLogLevel(_:)` has no log level to adjust.
+    func setLogLevel(_ level: LogLevel) throws {
+        throw ModelHealthError.internalError(
+            "setLogLevel(_:) is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `setLogHandler(level:_:)` has no handler to register.
+    func setLogHandler(level: LogLevel, _ handler: (@Sendable (LogEvent) -> Void)?) throws {
+        throw ModelHealthError.internalError(
+            "setLogHandler(level:_:) is not implemented by \(type(of: self))"
         )
     }
 }

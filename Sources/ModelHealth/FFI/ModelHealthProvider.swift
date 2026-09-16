@@ -15,6 +15,13 @@ private let metricDateFormatter: DateFormatter = {
 internal final class ModelHealthProviderImpl: ModelHealthProvider {
     private let handle: UnsafeMutablePointer<ModelHealthProviderHandle>
 
+    /// Retained context for the persistent log handler, if one is registered.
+    ///
+    /// Unlike the per-call `CallbackContext` below (retained just for the duration of one
+    /// synchronous FFI call), this must survive for as long as a handler stays registered —
+    /// see `setLogHandler(level:_:)`.
+    private var logHandlerContextPtr: UnsafeMutableRawPointer?
+
     /// Creates a new provider with the given API key and optional transport overrides.
     ///
     /// The service URL is fixed and cannot be changed — there is intentionally no base-URL parameter.
@@ -40,7 +47,13 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
     }
 
     deinit {
+        // Teardown order: clear the handler, then free the provider, then release the
+        // Swift-side retained context — only once the provider can no longer call back.
+        _ = model_health_set_log_handler(handle, nil, nil, LogLevel.off.cValue)
         model_health_provider_free(handle)
+        if let logHandlerContextPtr = logHandlerContextPtr {
+            Unmanaged<LogHandlerContext>.fromOpaque(logHandlerContextPtr).release()
+        }
     }
 
     /// Verifies the API key and returns information about the authenticated account.
@@ -178,33 +191,244 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
-    func subjectList() async throws -> [Subject] {
-        try await withCheckedThrowingContinuation { continuation in
-            var cArray = CSubjectArray(subjects: nil, count: 0)
-            let result = model_health_subject_list(handle, &cArray)
+    // MARK: - Filtered list streams
 
-            defer {
-                model_health_free_subject_array(cArray)
-            }
-
-            if result.success {
-                do {
-                    var subjects: [Subject] = []
-                    if cArray.count > 0, let subjectsPtr = cArray.subjects {
-                        subjects = try (0..<Int(cArray.count)).map { index in
-                            try Subject.from(cSubject: subjectsPtr[index])
-                        }
-                    }
-                    continuation.resume(returning: subjects)
-                } catch {
-                    continuation.resume(
-                        throwing: ModelHealthError.internalError(error.localizedDescription)
-                    )
-                }
-            } else {
-                handleFFIError(result, continuation: continuation)
+    func activitiesStream(
+        filterJSON: String,
+        activityTypeCode: Int32,
+        orderBy: String?,
+        limit: Int?
+    ) -> ActivityStream {
+        var stream: UnsafeMutablePointer<ModelHealthActivityStreamHandle>?
+        let opened = withOptionalCString(orderBy) { orderByPtr in
+            filterJSON.withCString { filterPtr in
+                model_health_activities_stream_new(
+                    handle, filterPtr, activityTypeCode, orderByPtr, Int64(limit ?? -1), &stream
+                )
             }
         }
+
+        guard opened.success, let stream else {
+            return ActivityStream(reader: ItemReader(source: unopened(ffiError(opened))))
+        }
+
+        let source = ItemSource<Activity>(
+            nextItems: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CTrialArray(trials: nil, count: 0)
+                    var total: UInt32 = 0
+                    var finished = false
+                    let result = model_health_activities_stream_next(stream, &cArray, &total, &finished)
+                    defer { model_health_free_trial_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try Activity.from(cTrial: itemsPtr[index])
+                    }
+                }
+            },
+            readTotal: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var total: UInt32 = 0
+                    let result = model_health_activities_stream_total(stream, &total)
+                    if result.success {
+                        continuation.resume(returning: Int(total))
+                    } else {
+                        continuation.resume(throwing: ffiError(result))
+                    }
+                }
+            },
+            readAll: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CTrialArray(trials: nil, count: 0)
+                    var total: UInt32 = 0
+                    let result = model_health_activities_stream_all(stream, &cArray, &total)
+                    defer { model_health_free_trial_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try Activity.from(cTrial: itemsPtr[index])
+                    }
+                }
+            },
+            release: { model_health_activities_stream_free(stream) }
+        )
+
+        return ActivityStream(reader: ItemReader(source: source))
+    }
+
+    func subjectsStream(
+        filterJSON: String,
+        activityTypeCode: Int32,
+        orderBy: String?,
+        limit: Int?
+    ) -> SubjectStream {
+        var stream: UnsafeMutablePointer<ModelHealthSubjectStreamHandle>?
+        let opened = withOptionalCString(orderBy) { orderByPtr in
+            filterJSON.withCString { filterPtr in
+                model_health_subjects_stream_new(
+                    handle, filterPtr, activityTypeCode, orderByPtr, Int64(limit ?? -1), &stream
+                )
+            }
+        }
+
+        guard opened.success, let stream else {
+            return SubjectStream(reader: ItemReader(source: unopened(ffiError(opened))))
+        }
+
+        let source = ItemSource<Subject>(
+            nextItems: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CSubjectArray(subjects: nil, count: 0)
+                    var total: UInt32 = 0
+                    var finished = false
+                    let result = model_health_subjects_stream_next(stream, &cArray, &total, &finished)
+                    defer { model_health_free_subject_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try Subject.from(cSubject: itemsPtr[index])
+                    }
+                }
+            },
+            readTotal: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var total: UInt32 = 0
+                    let result = model_health_subjects_stream_total(stream, &total)
+                    if result.success {
+                        continuation.resume(returning: Int(total))
+                    } else {
+                        continuation.resume(throwing: ffiError(result))
+                    }
+                }
+            },
+            readAll: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CSubjectArray(subjects: nil, count: 0)
+                    var total: UInt32 = 0
+                    let result = model_health_subjects_stream_all(stream, &cArray, &total)
+                    defer { model_health_free_subject_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try Subject.from(cSubject: itemsPtr[index])
+                    }
+                }
+            },
+            release: { model_health_subjects_stream_free(stream) }
+        )
+
+        return SubjectStream(reader: ItemReader(source: source))
+    }
+
+    func sessionsStream(
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> SessionStream {
+        var stream: UnsafeMutablePointer<ModelHealthSessionStreamHandle>?
+        let opened = withOptionalCString(orderBy) { orderByPtr in
+            filterJSON.withCString { filterPtr in
+                model_health_sessions_stream_new(
+                    handle, filterPtr, orderByPtr, Int64(limit ?? -1), &stream
+                )
+            }
+        }
+
+        guard opened.success, let stream else {
+            return SessionStream(reader: ItemReader(source: unopened(ffiError(opened))))
+        }
+
+        let source = ItemSource<Session>(
+            nextItems: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CSessionArray(sessions: nil, count: 0)
+                    var total: UInt32 = 0
+                    var finished = false
+                    let result = model_health_sessions_stream_next(stream, &cArray, &total, &finished)
+                    defer { model_health_free_session_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try Session.from(cSession: itemsPtr[index])
+                    }
+                }
+            },
+            readTotal: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var total: UInt32 = 0
+                    let result = model_health_sessions_stream_total(stream, &total)
+                    if result.success {
+                        continuation.resume(returning: Int(total))
+                    } else {
+                        continuation.resume(throwing: ffiError(result))
+                    }
+                }
+            },
+            readAll: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CSessionArray(sessions: nil, count: 0)
+                    var total: UInt32 = 0
+                    let result = model_health_sessions_stream_all(stream, &cArray, &total)
+                    defer { model_health_free_session_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try Session.from(cSession: itemsPtr[index])
+                    }
+                }
+            },
+            release: { model_health_sessions_stream_free(stream) }
+        )
+
+        return SessionStream(reader: ItemReader(source: source))
+    }
+
+    func groupsStream(
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> GroupStream {
+        var stream: UnsafeMutablePointer<ModelHealthGroupStreamHandle>?
+        let opened = withOptionalCString(orderBy) { orderByPtr in
+            filterJSON.withCString { filterPtr in
+                model_health_groups_stream_new(
+                    handle, filterPtr, orderByPtr, Int64(limit ?? -1), &stream
+                )
+            }
+        }
+
+        guard opened.success, let stream else {
+            return GroupStream(reader: ItemReader(source: unopened(ffiError(opened))))
+        }
+
+        let source = ItemSource<SubjectGroup>(
+            nextItems: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CSubjectGroupArray(groups: nil, count: 0)
+                    var total: UInt32 = 0
+                    var finished = false
+                    let result = model_health_groups_stream_next(stream, &cArray, &total, &finished)
+                    defer { model_health_free_subject_group_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try SubjectGroup.from(cSubjectGroup: itemsPtr[index])
+                    }
+                }
+            },
+            readTotal: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var total: UInt32 = 0
+                    let result = model_health_groups_stream_total(stream, &total)
+                    if result.success {
+                        continuation.resume(returning: Int(total))
+                    } else {
+                        continuation.resume(throwing: ffiError(result))
+                    }
+                }
+            },
+            readAll: {
+                try await withCheckedThrowingContinuation { continuation in
+                    var cArray = CSubjectGroupArray(groups: nil, count: 0)
+                    var total: UInt32 = 0
+                    let result = model_health_groups_stream_all(stream, &cArray, &total)
+                    defer { model_health_free_subject_group_array(cArray) }
+                    resume(continuation, result, cArray) { index, itemsPtr in
+                        try SubjectGroup.from(cSubjectGroup: itemsPtr[index])
+                    }
+                }
+            },
+            release: { model_health_groups_stream_free(stream) }
+        )
+
+        return GroupStream(reader: ItemReader(source: source))
     }
 
     func fetch(subject subjectId: Int) async throws -> Subject {
@@ -250,74 +474,6 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                         }
                     }
                     continuation.resume(returning: trials)
-                } catch {
-                    continuation.resume(
-                        throwing: ModelHealthError.internalError(error.localizedDescription)
-                    )
-                }
-            } else {
-                handleFFIError(result, continuation: continuation)
-            }
-        }
-    }
-
-    func activities(
-        forSubject subjectId: Int,
-        startIndex: Int,
-        count: Int,
-        sortedBy sort: ActivitySort,
-        start: Date?,
-        end: Date?
-    ) async throws -> [Activity] {
-        let startStr = start.map { metricDateFormatter.string(from: $0) }
-        let endStr = end.map { metricDateFormatter.string(from: $0) }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            var cArray = CTrialArray(trials: nil, count: 0)
-            let sortCode = activitySortToI32(sort)
-
-            func callFFI(startPtr: UnsafePointer<CChar>?, endPtr: UnsafePointer<CChar>?) -> FFIResult {
-                model_health_activities_for_subject(
-                    handle,
-                    Int32(subjectId),
-                    UInt32(startIndex),
-                    UInt32(count),
-                    sortCode,
-                    startPtr,
-                    endPtr,
-                    &cArray
-                )
-            }
-
-            let result: FFIResult
-            switch (startStr, endStr) {
-            case (let startValue?, let endValue?):
-                result = startValue.withCString { startPtr in
-                    endValue.withCString { endPtr in
-                        callFFI(startPtr: startPtr, endPtr: endPtr)
-                    }
-                }
-            case (let startValue?, nil):
-                result = startValue.withCString { startPtr in callFFI(startPtr: startPtr, endPtr: nil) }
-            case (nil, let endValue?):
-                result = endValue.withCString { endPtr in callFFI(startPtr: nil, endPtr: endPtr) }
-            case (nil, nil):
-                result = callFFI(startPtr: nil, endPtr: nil)
-            }
-
-            defer {
-                model_health_free_trial_array(cArray)
-            }
-
-            if result.success {
-                do {
-                    var activities: [Activity] = []
-                    if cArray.count > 0, let trialsPtr = cArray.trials {
-                        activities = try (0..<Int(cArray.count)).map { index in
-                            try Activity.from(cTrial: trialsPtr[index])
-                        }
-                    }
-                    continuation.resume(returning: activities)
                 } catch {
                     continuation.resume(
                         throwing: ModelHealthError.internalError(error.localizedDescription)
@@ -1375,6 +1531,66 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             handleFFIResult(result, continuation: continuation)
         }
     }
+
+    // MARK: - Logging
+
+    func setLogLevel(_ level: LogLevel) throws {
+        let result = model_health_set_log_level(handle, level.cValue)
+
+        if !result.success {
+            throw makeError(from: result)
+        }
+    }
+
+    func setLogHandler(level: LogLevel, _ handler: (@Sendable (LogEvent) -> Void)?) throws {
+        let isRegistering = handler != nil
+        let newContext = handler.map { LogHandlerContext(handler: $0) }
+        let newContextPtr = newContext.map { Unmanaged.passRetained($0).toOpaque() }
+
+        let result: FFIResult
+        if isRegistering {
+            result = model_health_set_log_handler(
+                handle,
+                { userDataPtr, eventJsonPtr in
+                    guard
+                        let userDataPtr = userDataPtr,
+                        let eventJsonPtr = eventJsonPtr
+                    else {
+                        return
+                    }
+
+                    let context = Unmanaged<LogHandlerContext>.fromOpaque(userDataPtr)
+                        .takeUnretainedValue()
+                    let jsonString = String(cString: eventJsonPtr)
+
+                    do {
+                        let event = try LogEvent.from(jsonString: jsonString)
+                        context.handler(event)
+                    } catch {
+                        // Ignore parsing errors in callback
+                    }
+                },
+                newContextPtr,
+                level.cValue
+            )
+        } else {
+            result = model_health_set_log_handler(handle, nil, nil, level.cValue)
+        }
+
+        guard result.success else {
+            // Registration failed — release what was just retained; nothing was swapped in.
+            if let newContextPtr = newContextPtr {
+                Unmanaged<LogHandlerContext>.fromOpaque(newContextPtr).release()
+            }
+            throw makeError(from: result)
+        }
+
+        // Only release the old context once the FFI swap has succeeded.
+        if let oldContextPtr = logHandlerContextPtr {
+            Unmanaged<LogHandlerContext>.fromOpaque(oldContextPtr).release()
+        }
+        logHandlerContextPtr = newContextPtr
+    }
 }
 // swiftlint:enable type_body_length
 
@@ -1459,6 +1675,10 @@ private extension ModelHealthProviderImpl {
         _ result: FFIResult,
         continuation: CheckedContinuation<T, Error>
     ) {
+        continuation.resume(throwing: makeError(from: result))
+    }
+
+    func makeError(from result: FFIResult) -> ModelHealthError {
         let message: String
         if let errorMessage = result.error_message {
             message = String(cString: errorMessage)
@@ -1467,13 +1687,12 @@ private extension ModelHealthProviderImpl {
             message = "Unknown error"
         }
 
-        let error = ModelHealthError.from(
+        return ModelHealthError.from(
             code: result.error_code,
             subCode: result.error_sub_code,
             statusCode: result.error_status_code,
             message: message
         )
-        continuation.resume(throwing: error)
     }
 
     func freeSessionFields(_ session: CSession) {
@@ -1612,4 +1831,98 @@ private class CallbackContext<T>: @unchecked Sendable {
         self.statusUpdate = statusUpdate
         self.continuation = continuation
     }
+}
+
+/// Unlike `CallbackContext` above, this is retained for as long as a log handler stays
+/// registered rather than just for the duration of one synchronous FFI call — see
+/// `ModelHealthProviderImpl.setLogHandler(level:_:)`.
+private class LogHandlerContext: @unchecked Sendable {
+    let handler: @Sendable (LogEvent) -> Void
+
+    init(handler: @escaping @Sendable (LogEvent) -> Void) {
+        self.handler = handler
+    }
+}
+
+// MARK: - Stream helpers
+
+/// Turns a failed FFI result into the error it describes, freeing its message.
+private func ffiError(_ result: FFIResult) -> ModelHealthError {
+    let message: String
+    if let errorMessage = result.error_message {
+        message = String(cString: errorMessage)
+        model_health_free_error(errorMessage)
+    } else {
+        message = "Unknown error"
+    }
+    return ModelHealthError.from(
+        code: result.error_code,
+        subCode: result.error_sub_code,
+        statusCode: result.error_status_code,
+        message: message
+    )
+}
+
+/// A source for a list that could not be opened: every read reports why.
+///
+/// Opening is deliberately not a throwing call — `list(...)` returns a sequence without
+/// sending anything, and the sort field is a typed enum, so the only way opening can fail is
+/// an internal one. Reporting it at the first read keeps `list(...)` free of `try`.
+private func unopened<Element>(_ error: ModelHealthError) -> ItemSource<Element> {
+    ItemSource(
+        nextItems: { throw error },
+        readTotal: { throw error },
+        readAll: { throw error },
+        release: {}
+    )
+}
+
+/// Resumes `continuation` with the models decoded from a chunk, or with the reason it failed.
+private func resume<Element, CArray, CItem>(
+    _ continuation: CheckedContinuation<[Element], Error>,
+    _ result: FFIResult,
+    _ array: CArray,
+    convert: (Int, UnsafeMutablePointer<CItem>) throws -> Element
+) where CArray: CItemArray, CArray.Item == CItem {
+    guard result.success else {
+        continuation.resume(throwing: ffiError(result))
+        return
+    }
+    do {
+        var items: [Element] = []
+        if array.itemCount > 0, let itemsPtr = array.itemsPointer {
+            items = try (0..<array.itemCount).map { try convert($0, itemsPtr) }
+        }
+        continuation.resume(returning: items)
+    } catch {
+        continuation.resume(throwing: ModelHealthError.internalError(error.localizedDescription))
+    }
+}
+
+/// Lets the chunk decoder reach into any of the C array wrappers, each of which names its
+/// pointer field after its own resource.
+private protocol CItemArray {
+    associatedtype Item
+    var itemsPointer: UnsafeMutablePointer<Item>? { get }
+    var itemCount: Int { get }
+}
+
+extension CTrialArray: CItemArray {
+    fileprivate var itemsPointer: UnsafeMutablePointer<CTrial>? { trials }
+    fileprivate var itemCount: Int { Int(count) }
+}
+
+extension CSubjectArray: CItemArray {
+    fileprivate var itemsPointer: UnsafeMutablePointer<CSubject>? { subjects }
+    fileprivate var itemCount: Int { Int(count) }
+}
+
+extension CSessionArray: CItemArray {
+    fileprivate var itemsPointer: UnsafeMutablePointer<CSession>? { sessions }
+    fileprivate var itemCount: Int { Int(count) }
+}
+
+extension CSubjectGroupArray: CItemArray {
+    fileprivate var itemsPointer: UnsafeMutablePointer<CSubjectGroup>? { groups }
+    fileprivate var itemCount: Int { Int(count) }
 }

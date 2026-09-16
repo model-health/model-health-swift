@@ -280,21 +280,6 @@ public struct Activity: Sendable {
     public let updatedAt: Date
 }
 
-/// Sort order for activity lists.
-///
-/// ```swift
-/// let activities = try await client.activities(
-///     forSubject: subjectId,
-///     startIndex: 0,
-///     count: 20,
-///     sortedBy: .updatedAt
-/// )
-/// ```
-public enum ActivitySort: Sendable {
-    /// Sort by most recently updated.
-    case updatedAt
-}
-
 /// A tag that can be applied to activities for categorization.
 ///
 /// Use tags to organize and filter activities by type or condition
@@ -586,6 +571,94 @@ public enum CalibrationStatus: Sendable {
     /// Calibration has completed successfully.
     case done
 }
+
+/// How verbose a log event stream should be.
+///
+/// Each level includes every level above it: `.warn` includes `.error`, `.info`
+/// includes both.
+public enum LogLevel: String, Codable, Sendable {
+    /// No log events are delivered.
+    case off
+
+    /// Only error-level events.
+    case error
+
+    /// Warning-level events and above.
+    case warn
+
+    /// All log events, including informational ones.
+    case info
+}
+
+/// Which part of a session's lifecycle a log event describes.
+public enum LogCategory: String, Codable, Sendable {
+    /// Account and profile events, such as fetching account info or changing settings.
+    case account
+
+    /// Activity lifecycle events, such as fetching, updating, or deleting one.
+    case activity
+
+    /// Analysis lifecycle events.
+    case analysis
+
+    /// Metrics events, such as fetching dashboard metrics.
+    case metrics
+
+    /// Client-level events, such as initialization.
+    case sdk
+
+    /// Session, recording, and calibration lifecycle events.
+    case session
+
+    /// Subject lifecycle events, such as fetching or creating one.
+    case subject
+
+    /// Video download events.
+    case video
+}
+
+/// A single log event delivered to a handler registered via
+/// ``ModelHealthClient/setLogHandler(level:_:)``.
+public struct LogEvent: Codable, Sendable {
+    /// How important this event is.
+    public let level: LogLevel
+
+    /// Which part of a session's lifecycle this event describes.
+    public let category: LogCategory
+
+    /// Stable, machine-readable identifier for this event, e.g. `"session_created"`.
+    public let code: String
+
+    /// Human-readable description of the event.
+    public let message: String
+
+    /// Milliseconds since the Unix epoch when the event was created.
+    public let timestampMs: UInt64
+}
+
+#if DEBUG
+extension LogEvent {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var level: LogLevel = .info
+        public var category: LogCategory = .session
+        public var code: String = "session_created"
+        public var message: String = "Preview log message"
+        public var timestampMs: UInt64 = 0
+
+        public func build() -> LogEvent {
+            LogEvent(level: level, category: category, code: code, message: message, timestampMs: timestampMs)
+        }
+    }
+}
+#endif
 
 /// The activity type as reported, carrying `{id, name, displayName}` through
 /// unchanged — including a type this SDK build doesn't otherwise recognize.
