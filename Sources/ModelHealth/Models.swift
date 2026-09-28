@@ -132,6 +132,72 @@ public struct AccountInfo: Sendable {
     public let country: String?
 }
 
+// MARK: - UsageInfo
+
+/// Current billing/quota state for the authenticated account.
+///
+/// Returned by ``ModelHealthClient/usage()``. Use it to show usage bars and plan
+/// limits, and to block recording in your own UI when the quota is exhausted or the
+/// subscription has lapsed.
+public struct UsageInfo: Sendable {
+    /// Why ``recordingAllowed`` is `false`. `nil` when recording is allowed, or when
+    /// there's no active plan to give a more specific reason for.
+    public enum Reason: CaseIterable, Sendable {
+        /// The account has no active plan.
+        case noActivePlan
+
+        /// The current plan's billing period has ended.
+        case periodExpired
+
+        /// The current plan's activity limit has been reached.
+        case limitReached
+
+        /// A payment on the current plan failed.
+        case paymentFailed
+    }
+
+    /// How often a plan's usage resets.
+    public enum ResetPeriod: CaseIterable, Sendable {
+        /// Usage resets every month.
+        case monthly
+
+        /// Usage resets once a year.
+        case annually
+    }
+
+    /// Whether the account is currently allowed to record. Check this before starting
+    /// a recording flow.
+    public let recordingAllowed: Bool
+
+    /// Why recording is blocked, if it is. `nil` when recording is allowed, or when
+    /// there's no active plan.
+    public let reason: Reason?
+
+    /// Activities used in the current period, or `nil` if there's no active plan.
+    public let activitiesUsed: Int?
+
+    /// Activities allowed in the current period, or `nil` if there's no active plan.
+    /// A `nil` value while a plan **is** active means unlimited activities.
+    public let activitiesMax: Int?
+
+    /// When the current billing period ends, or `nil` if there's no active plan.
+    public let periodEnd: Date?
+
+    /// The name of the current plan, or `nil` if there's no active plan.
+    public let planName: String?
+
+    /// Whether the account is on a free trial, or `nil` if there's no organization or
+    /// no plan history at all.
+    public let isFreeTrial: Bool?
+
+    /// How often the current plan's usage resets, or `nil` if there's no active plan.
+    public let resetPeriod: ResetPeriod?
+
+    /// Whether the current subscription will automatically renew, or `nil` if
+    /// there's no active plan or no subscription linked.
+    public let willAutoRenew: Bool?
+}
+
 /// Parameters for creating a new subject.
 ///
 /// `name`, `weight` and `height` are required.
@@ -660,17 +726,53 @@ extension LogEvent {
 }
 #endif
 
-/// The activity type as reported, carrying `{id, name, displayName}` through
+/// The activity type as reported, carrying `{id, name, slug, displayName}` through
 /// unchanged — including a type this SDK build doesn't otherwise recognize.
 public struct ActivityTypeInfo: Sendable, Equatable {
     /// Database id of the activity-type record.
     public let id: Int
 
-    /// Machine name, e.g. `"counter_movement_jump"`.
+    /// The name a list filters by, e.g. `"Squat Exercise"`.
     public let name: String
 
-    /// Human-readable label, e.g. `"Counter Movement Jump"`.
+    /// Human-readable label. Not always the same as ``name`` — one type reads
+    /// "Range of Motion (ROM)" and shows as "Custom Activity".
     public let displayName: String
+
+    /// Machine-readable key, e.g. `"squat_exercise"`.
+    ///
+    /// What to branch on: it is derived from the name once and then stays put, so
+    /// renaming the type in the dashboard does not change it, while ``name`` and
+    /// ``displayName`` both can. Empty when none was reported.
+    public let slug: String
+
+    /// Freeform description, when the type carries one. `nil` on a type reported
+    /// alongside an activity, which carries only the four fields above.
+    public let description: String?
+
+    /// Whether the type belongs to the account rather than being one everybody has.
+    /// `nil` on a type reported alongside an activity.
+    public let isCustom: Bool?
+
+    /// Rebuilds a type from values kept from an earlier read.
+    ///
+    /// Normally one comes from ``ModelHealthClient/activityTypes()`` or off an activity;
+    /// this is for a caller who stored the fields instead of the value.
+    public init(
+        id: Int,
+        name: String,
+        displayName: String,
+        slug: String = "",
+        description: String? = nil,
+        isCustom: Bool? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.displayName = displayName
+        self.slug = slug
+        self.description = description
+        self.isCustom = isCustom
+    }
 }
 
 /// Available analysis types for motion capture activities.
@@ -1139,6 +1241,42 @@ extension AccountInfo {
                 institution: institution,
                 profession: profession,
                 country: country
+            )
+        }
+    }
+}
+
+extension UsageInfo {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var recordingAllowed = true
+        public var reason: UsageInfo.Reason?
+        public var activitiesUsed: Int? = 5
+        public var activitiesMax: Int? = 100
+        public var periodEnd: Date? = Date()
+        public var planName: String? = "Pro"
+        public var isFreeTrial: Bool? = false
+        public var resetPeriod: UsageInfo.ResetPeriod? = .monthly
+        public var willAutoRenew: Bool? = true
+
+        func build() -> UsageInfo {
+            UsageInfo(
+                recordingAllowed: recordingAllowed,
+                reason: reason,
+                activitiesUsed: activitiesUsed,
+                activitiesMax: activitiesMax,
+                periodEnd: periodEnd,
+                planName: planName,
+                isFreeTrial: isFreeTrial,
+                resetPeriod: resetPeriod,
+                willAutoRenew: willAutoRenew
             )
         }
     }

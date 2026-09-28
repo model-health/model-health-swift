@@ -424,11 +424,12 @@ public enum GroupOrderBy: String, Sendable {
 
 // MARK: - Filter payloads
 
-/// Wire shape of ``ActivityListFilter`` in the core layer. `activityType` is not here — it
-/// crosses as a discriminant so the enum's wire name stays on the Rust side.
+/// Wire shape of ``ActivityListFilter`` in the core layer.
 internal struct ActivityFilterPayload: Encodable {
     var subjectId: Int?
     var calibrationSessionId: String?
+    var activityType: String?
+    var activityTypeId: Int?
     var excludeCalibrate: Bool
     var excludeNeutral: Bool
     var createdAfter: String?
@@ -447,6 +448,8 @@ internal struct SubjectFilterPayload: Encodable {
     var groups: [String]?
     var tags: [String]?
     var createdBy: [Int]?
+    var activityType: String?
+    var activityTypeId: Int?
     var activityComplete: Bool?
     var sessionId: String?
 }

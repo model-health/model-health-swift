@@ -88,6 +88,40 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
+    /// Fetches the current billing/quota state for the authenticated account.
+    func usage() async throws -> UsageInfo {
+        try await withCheckedThrowingContinuation { continuation in
+            var cInfo = CUsageInfo(
+                recording_allowed: false,
+                reason: -1,
+                activities_used: -1,
+                activities_max: -1,
+                period_end: nil,
+                plan_name: nil,
+                is_free_trial: -1,
+                reset_period: -1,
+                will_auto_renew: -1
+            )
+            let result = model_health_usage(handle, &cInfo)
+
+            if result.success {
+                do {
+                    let info = try UsageInfo.from(cUsageInfo: cInfo)
+                    model_health_free_usage_info(cInfo)
+                    continuation.resume(returning: info)
+                } catch {
+                    model_health_free_usage_info(cInfo)
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                model_health_free_usage_info(cInfo)
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
     // MARK: - List Operations
 
     func sessionList() async throws -> [Session] {
@@ -191,11 +225,46 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
+    func switchSubject(to subject: Subject, in session: Session) async throws -> Session {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSession = CSession(
+                id: nil,
+                name: nil,
+                session_name: nil,
+                user: 0,
+                is_public: false,
+                qrcode: nil,
+                subject: 0,
+                trials_count: 0,
+                created_at: nil,
+                updated_at: nil
+            )
+
+            let result = session.id.withCString { sessionIdPtr in
+                model_health_switch_subject(handle, sessionIdPtr, Int32(subject.id), &cSession)
+            }
+
+            if result.success {
+                do {
+                    let switched = try Session.from(cSession: cSession)
+                    freeSessionFields(cSession)
+                    continuation.resume(returning: switched)
+                } catch {
+                    freeSessionFields(cSession)
+                    continuation.resume(
+                        throwing: ModelHealthError.internalError(error.localizedDescription)
+                    )
+                }
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
+        }
+    }
+
     // MARK: - Filtered list streams
 
     func activitiesStream(
         filterJSON: String,
-        activityTypeCode: Int32,
         orderBy: String?,
         limit: Int?
     ) -> ActivityStream {
@@ -203,7 +272,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         let opened = withOptionalCString(orderBy) { orderByPtr in
             filterJSON.withCString { filterPtr in
                 model_health_activities_stream_new(
-                    handle, filterPtr, activityTypeCode, orderByPtr, Int64(limit ?? -1), &stream
+                    handle, filterPtr, orderByPtr, Int64(limit ?? -1), &stream
                 )
             }
         }
@@ -255,7 +324,6 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
     func subjectsStream(
         filterJSON: String,
-        activityTypeCode: Int32,
         orderBy: String?,
         limit: Int?
     ) -> SubjectStream {
@@ -263,7 +331,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         let opened = withOptionalCString(orderBy) { orderByPtr in
             filterJSON.withCString { filterPtr in
                 model_health_subjects_stream_new(
-                    handle, filterPtr, activityTypeCode, orderByPtr, Int64(limit ?? -1), &stream
+                    handle, filterPtr, orderByPtr, Int64(limit ?? -1), &stream
                 )
             }
         }
@@ -601,6 +669,37 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             }
 
             handleFFIResult(result, continuation: continuation)
+        }
+    }
+
+    func activityTypes() async throws -> [ActivityTypeInfo] {
+        try await withCheckedThrowingContinuation { continuation in
+            var cArray = CActivityTypeInfoArray(types: nil, count: 0)
+            let result = model_health_activity_types(handle, &cArray)
+
+            defer {
+                model_health_free_activity_type_array(cArray)
+            }
+
+            if result.success {
+                var types: [ActivityTypeInfo] = []
+                if cArray.count > 0, let typesPtr = cArray.types {
+                    types = (0..<Int(cArray.count)).map { index in
+                        let t = typesPtr[index]
+                        return ActivityTypeInfo(
+                            id: Int(t.id),
+                            name: t.name.map { String(cString: $0) } ?? "",
+                            displayName: t.display_name.map { String(cString: $0) } ?? "",
+                            slug: t.slug.map { String(cString: $0) } ?? "",
+                            description: t.description.map { String(cString: $0) },
+                            isCustom: t.is_custom
+                        )
+                    }
+                }
+                continuation.resume(returning: types)
+            } else {
+                handleFFIError(result, continuation: continuation)
+            }
         }
     }
 
@@ -1812,6 +1911,7 @@ private extension CTrial {
             updated_at: nil,
             activity_type_id: -1,
             activity_type_name: nil,
+            activity_type_slug: nil,
             activity_type_display_name: nil,
             notes: nil,
             created_by: nil,

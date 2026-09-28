@@ -6,9 +6,9 @@ import WebKit
 ///
 /// Creating a controller starts fetching and loading the activity's
 /// animation data automatically. Use `play()`, `pause()`, `seek(to:)`,
-/// `step(_:)`, and `setPlaybackSpeed(_:)` to control playback, and observe
-/// `isReady`, `currentTime`, `duration`, `isPlaying`, and `lastError` for
-/// state.
+/// `step(_:)`, `setPlaybackSpeed(_:)`, and `setExternalClock(_:)` to control
+/// playback, and observe `isReady`, `currentTime`, `duration`, `isPlaying`,
+/// `isExternalClockEnabled`, and `lastError` for state.
 @MainActor
 public final class View3DController: NSObject, ObservableObject {
     /// Whether the controller has finished loading and is ready to accept commands.
@@ -35,10 +35,24 @@ public final class View3DController: NSObject, ObservableObject {
     /// whether it succeeds or fails.
     @Published public private(set) var isLoadingTransforms = true
 
+    /// Whether you're currently driving the view's clock yourself, most
+    /// recently set via ``setExternalClock(_:)``.
+    @Published public private(set) var isExternalClockEnabled = false
+
     weak var webView: WKWebView?
 
     private var pendingTransformsJSON: String?
     private var pendingExternalData: String?
+
+    // Mirrors webview-bundle/src/main.tsx's FRAME_CHANGED_REPORT_INTERVAL_MS
+    // (20Hz outbound telemetry) — same rate, applied to the inbound direction,
+    // so driving seek(to:) at native video frame rate (30-60Hz) doesn't
+    // produce 30-60 evaluateJavaScript round-trips per second.
+    private static let seekThrottleInterval: TimeInterval = 0.05
+
+    private lazy var seekCoalescer = SeekCoalescer(interval: Self.seekThrottleInterval) { [weak self] time in
+        self?.evaluate("window.viewerBridge && window.viewerBridge.seek(\(time))")
+    }
 
     private let activity: Activity
     private let client: ModelHealthClient
@@ -98,8 +112,30 @@ public final class View3DController: NSObject, ObservableObject {
         callBridge("pause")
     }
 
+    /// Declares whether you are now driving the view's clock yourself (e.g.
+    /// from a synced video's own clock).
+    ///
+    /// While `true`, playback never advances on its own — `play()` has no
+    /// effect — and ``seek(to:)`` is the only thing that moves the current
+    /// time. Call ``seek(to:)`` as often as your own clock updates; it's
+    /// safe to call at high frequency, up to once per video frame.
+    public func setExternalClock(_ enabled: Bool) {
+        isExternalClockEnabled = enabled
+        sendExternalClock()
+    }
+
+    /// Jumps to `time`, in seconds.
+    ///
+    /// Safe to call at high frequency — up to once per video frame — while
+    /// ``setExternalClock(_:)`` is enabled; rapid calls are coalesced so
+    /// only the latest requested time is ever sent, at up to ~20 updates
+    /// per second.
     public func seek(to time: Double) {
-        evaluate("window.viewerBridge && window.viewerBridge.seek(\(time))")
+        // Taken as read rather than waited for. Under an external clock the page stops
+        // reporting the playhead — it would only be echoing what it was handed — so a
+        // view bound to `currentTime` would sit frozen while a video drove the model.
+        currentTime = min(max(time, 0), duration > 0 ? duration : time)
+        seekCoalescer.call(time)
     }
 
     /// Steps one frame forward (`1`) or backward (`-1`).
@@ -163,6 +199,12 @@ private extension View3DController {
         evaluate("window.viewerBridge && window.viewerBridge.\(method)(\(jsStringLiteral(jsonArgument)))")
     }
 
+    func sendExternalClock() {
+        evaluate(
+            "window.viewerBridge && window.viewerBridge.setExternalClock(\(isExternalClockEnabled))"
+        )
+    }
+
     func evaluate(_ script: String) {
         guard let webView else {
             return
@@ -179,6 +221,12 @@ private extension View3DController {
 
     func handleReady() {
         isReady = true
+
+        // Sent again on every ready, not just the first: a command issued before the
+        // page existed reached nothing, and a reload starts it back on its own clock.
+        // Left as the caller last set it, so the two sides cannot disagree about who
+        // owns the time.
+        sendExternalClock()
 
         if let pendingTransformsJSON {
             callBridge("loadTransforms", jsonArgument: pendingTransformsJSON)
@@ -209,6 +257,7 @@ private extension View3DController {
 }
 
 extension View3DController: WKScriptMessageHandler {
+    // swiftlint:disable:next cyclomatic_complexity
     public func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage

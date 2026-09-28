@@ -157,6 +157,47 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
         try await serviceProvider.accountInfo()
     }
 
+    /// Returns the current billing/quota state for the account.
+    ///
+    /// Use this to show usage bars and plan limits in your own UI, and to check whether
+    /// recording is currently allowed before starting a recording flow — for example when
+    /// the quota is exhausted or the subscription has lapsed.
+    ///
+    /// ```swift
+    /// let usage = try await client.usage()
+    /// guard usage.recordingAllowed else {
+    ///     return
+    /// }
+    /// let activity = try await client.startRecording(activityNamed: "cmj", in: session)
+    /// ```
+    ///
+    /// - Returns: A ``UsageInfo`` describing the account's current usage and plan state.
+    /// - Throws: A ``ModelHealthError`` if the request fails due to network or authentication issues.
+    public func usage() async throws -> UsageInfo {
+        try await serviceProvider.usage()
+    }
+
+    /// The activity types this account can use: the ones everybody has, plus any this
+    /// account or its organisation added.
+    ///
+    /// The list is the account's own and grows, which is why a list filters by a type
+    /// taken from here rather than by a name known in advance.
+    ///
+    /// ```swift
+    /// let types = try await client.activityTypes()
+    /// let squats = types.first { $0.displayName == "Squat Exercise" }!
+    /// for try await activity in client.activities.list(activityType: squats) {
+    ///     print(activity.name ?? activity.id)
+    /// }
+    /// ```
+    ///
+    /// - Returns: Every activity type available to this account.
+    /// - Throws: A ``ModelHealthError`` if the API key is invalid or expired, or on
+    ///   network failure.
+    public func activityTypes() async throws -> [ActivityTypeInfo] {
+        try await serviceProvider.activityTypes()
+    }
+
     // MARK: - Data Retrieval
 
     /// Retrieves all sessions for the account associated with the API key.
@@ -219,6 +260,37 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     ///   not found.
     public func newSession(from session: Session) async throws -> Session {
         try await serviceProvider.newSession(from: session)
+    }
+
+    /// Points the cameras at the session to record this subject in.
+    ///
+    /// Use this to move between subjects in any order, including going back to someone
+    /// recorded earlier. The session already recording that subject is reused when its
+    /// camera calibration and static pose are both still good, so the pose does not have to
+    /// be repeated. Otherwise a new session is started from `session`, exactly as
+    /// ``newSession(from:)`` would.
+    ///
+    /// ```swift
+    /// // Everyone does exercise 1, then everyone does exercise 2
+    /// for exercise in ["CMJ", "Squat"] {
+    ///     for subject in subjects {
+    ///         session = try await client.switchSubject(to: subject, in: session)
+    ///         let activity = try await client.startRecording(activityNamed: exercise, in: session)
+    ///         try await client.stopRecording(session)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - subject: The subject to record next.
+    ///   - session: The session the cameras are pointed at now.
+    /// - Returns: The ``Session`` to record in — one that already existed, the one passed
+    ///   in, or a new one.
+    /// - Throws: A ``ModelHealthError`` if the request fails, the session or subject is not
+    ///   found, or the API version in use cannot hand the cameras back to an existing
+    ///   session.
+    public func switchSubject(to subject: Subject, in session: Session) async throws -> Session {
+        try await serviceProvider.switchSubject(to: subject, in: session)
     }
 
     /// Retrieves all movement activities associated with a session.
@@ -924,34 +996,37 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthClient/accountInfo()``
     func accountInfo() async throws -> AccountInfo
 
+    /// See ``ModelHealthClient/usage()``
+    func usage() async throws -> UsageInfo
+
+    /// See ``ModelHealthClient/activityTypes()``
+    func activityTypes() async throws -> [ActivityTypeInfo]
+
     /// Opens a filtered sequence of activities.
     ///
-    /// `filterJSON` is the filter as a JSON object; `activityTypeCode` is the activity-type
-    /// discriminant, or a negative value to leave it unset. `limit` caps how many items the
+    /// `filterJSON` is the filter as a JSON object. `limit` caps how many items the
     /// sequence yields in total; `nil` yields every match.
     func activitiesStream(
         filterJSON: String,
-        activityTypeCode: Int32,
         orderBy: String?,
         limit: Int?
     ) -> ActivityStream
 
-    /// Opens a filtered sequence of subjects. See ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    /// Opens a filtered sequence of subjects. See ``ModelHealthProvider/activitiesStream(filterJSON:orderBy:limit:)``.
     func subjectsStream(
         filterJSON: String,
-        activityTypeCode: Int32,
         orderBy: String?,
         limit: Int?
     ) -> SubjectStream
 
-    /// Opens a filtered sequence of sessions. See ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    /// Opens a filtered sequence of sessions. See ``ModelHealthProvider/activitiesStream(filterJSON:orderBy:limit:)``.
     func sessionsStream(
         filterJSON: String,
         orderBy: String?,
         limit: Int?
     ) -> SessionStream
 
-    /// Opens a filtered sequence of subject groups. See ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    /// Opens a filtered sequence of subject groups. See ``ModelHealthProvider/activitiesStream(filterJSON:orderBy:limit:)``.
     func groupsStream(
         filterJSON: String,
         orderBy: String?,
@@ -966,6 +1041,9 @@ public protocol ModelHealthProvider {
 
     /// See ``ModelHealthClient/newSession(from:)``
     func newSession(from session: Session) async throws -> Session
+
+    /// See ``ModelHealthClient/switchSubject(to:in:)``
+    func switchSubject(to subject: Subject, in session: Session) async throws -> Session
 
     /// See ``ModelHealthClient/fetch(subject:)``
     func fetch(subject subjectId: Int) async throws -> Subject
@@ -1091,10 +1169,34 @@ public extension ModelHealthProvider {
     }
 
     /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `usage()` has no usage state to report.
+    func usage() async throws -> UsageInfo {
+        throw ModelHealthError.internalError(
+            "usage() is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `activityTypes()` has no types to report.
+    func activityTypes() async throws -> [ActivityTypeInfo] {
+        throw ModelHealthError.internalError(
+            "activityTypes() is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
     /// implemented `newSession(from:)` has no session to derive one from.
     func newSession(from session: Session) async throws -> Session {
         throw ModelHealthError.internalError(
             "newSession(from:) is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `switchSubject(to:in:)` has no session to point the cameras at.
+    func switchSubject(to subject: Subject, in session: Session) async throws -> Session {
+        throw ModelHealthError.internalError(
+            "switchSubject(to:in:) is not implemented by \(type(of: self))"
         )
     }
 
@@ -1113,7 +1215,6 @@ public extension ModelHealthProvider {
     /// it reports at the first read instead.
     func activitiesStream(
         filterJSON: String,
-        activityTypeCode: Int32,
         orderBy: String?,
         limit: Int?
     ) -> ActivityStream {
@@ -1121,10 +1222,9 @@ public extension ModelHealthProvider {
     }
 
     /// Returns a sequence that reports ``ModelHealthError/internalError(_:)`` when read. See
-    /// ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    /// ``ModelHealthProvider/activitiesStream(filterJSON:orderBy:limit:)``.
     func subjectsStream(
         filterJSON: String,
-        activityTypeCode: Int32,
         orderBy: String?,
         limit: Int?
     ) -> SubjectStream {
@@ -1132,7 +1232,7 @@ public extension ModelHealthProvider {
     }
 
     /// Returns a sequence that reports ``ModelHealthError/internalError(_:)`` when read. See
-    /// ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    /// ``ModelHealthProvider/activitiesStream(filterJSON:orderBy:limit:)``.
     func sessionsStream(
         filterJSON: String,
         orderBy: String?,
@@ -1142,7 +1242,7 @@ public extension ModelHealthProvider {
     }
 
     /// Returns a sequence that reports ``ModelHealthError/internalError(_:)`` when read. See
-    /// ``ModelHealthProvider/activitiesStream(filterJSON:activityTypeCode:orderBy:limit:)``.
+    /// ``ModelHealthProvider/activitiesStream(filterJSON:orderBy:limit:)``.
     func groupsStream(
         filterJSON: String,
         orderBy: String?,

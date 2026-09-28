@@ -44,7 +44,7 @@ public struct ActivitiesResource {
     public func list(
         subject: Subject? = nil,
         calibrationSession: Session? = nil,
-        activityType: ActivityType? = nil,
+        activityType: ActivityTypeInfo? = nil,
         excludeCalibration: Bool = true,
         createdAfter: Date? = nil,
         createdBefore: Date? = nil,
@@ -59,6 +59,8 @@ public struct ActivitiesResource {
         let filter = ActivityFilterPayload(
             subjectId: subject?.id,
             calibrationSessionId: calibrationSession?.id,
+            activityType: activityType?.name,
+            activityTypeId: nil,
             excludeCalibrate: excludeCalibration,
             excludeNeutral: excludeCalibration,
             createdAfter: formatFilterDate(createdAfter),
@@ -70,12 +72,10 @@ public struct ActivitiesResource {
             excludeAnalysisError: excludeAnalysisError
         )
         let filterJSON = encodeFilter(filter)
-        let typeCode = activityType?.cValue ?? -1
         let provider = provider
 
         return provider.activitiesStream(
             filterJSON: filterJSON,
-            activityTypeCode: typeCode,
             orderBy: orderBy?.rawValue,
             limit: limit
         )
@@ -126,7 +126,7 @@ public struct SubjectsResource {
         groups: [String]? = nil,
         tags: [String]? = nil,
         createdBy: [Int]? = nil,
-        activityType: ActivityType? = nil,
+        activityType: ActivityTypeInfo? = nil,
         activityComplete: Bool? = nil,
         session: Session? = nil,
         orderBy: SubjectOrderBy? = nil,
@@ -139,16 +139,16 @@ public struct SubjectsResource {
             groups: groups,
             tags: tags,
             createdBy: createdBy,
+            activityType: activityType?.name,
+            activityTypeId: nil,
             activityComplete: activityComplete,
             sessionId: session?.id
         )
         let filterJSON = encodeFilter(filter)
-        let typeCode = activityType?.cValue ?? -1
         let provider = provider
 
         return provider.subjectsStream(
             filterJSON: filterJSON,
-            activityTypeCode: typeCode,
             orderBy: orderBy?.rawValue,
             limit: limit
         )

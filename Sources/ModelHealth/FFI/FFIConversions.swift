@@ -123,6 +123,22 @@ extension AccountInfo {
     }
 }
 
+extension UsageInfo {
+    internal static func from(cUsageInfo: CUsageInfo) throws -> UsageInfo {
+        UsageInfo(
+            recordingAllowed: cUsageInfo.recording_allowed,
+            reason: cUsageInfo.reason == -1 ? nil : UsageInfo.Reason(cValue: cUsageInfo.reason),
+            activitiesUsed: cUsageInfo.activities_used == -1 ? nil : Int(cUsageInfo.activities_used),
+            activitiesMax: cUsageInfo.activities_max == -1 ? nil : Int(cUsageInfo.activities_max),
+            periodEnd: try parseOptionalFFIDate(cUsageInfo.period_end, fieldName: "UsageInfo periodEnd"),
+            planName: cUsageInfo.plan_name.map { String(cString: $0) },
+            isFreeTrial: cUsageInfo.is_free_trial == -1 ? nil : (cUsageInfo.is_free_trial == 1),
+            resetPeriod: cUsageInfo.reset_period == -1 ? nil : UsageInfo.ResetPeriod(cValue: cUsageInfo.reset_period),
+            willAutoRenew: cUsageInfo.will_auto_renew == -1 ? nil : (cUsageInfo.will_auto_renew == 1)
+        )
+    }
+}
+
 extension Subject {
     internal static func from(cSubject: CSubject) throws -> Subject {
         guard let name = cSubject.name else {
@@ -225,7 +241,8 @@ extension Activity {
             activityType = ActivityTypeInfo(
                 id: Int(cTrial.activity_type_id),
                 name: cTrial.activity_type_name.map { String(cString: $0) } ?? "",
-                displayName: cTrial.activity_type_display_name.map { String(cString: $0) } ?? ""
+                displayName: cTrial.activity_type_display_name.map { String(cString: $0) } ?? "",
+                slug: cTrial.activity_type_slug.map { String(cString: $0) } ?? ""
             )
         }
 
@@ -654,6 +671,68 @@ extension VideoUploadMode {
 
         case 2:
             self = .flush
+
+        default:
+            return nil
+        }
+    }
+}
+
+extension UsageInfo.Reason {
+    var cValue: Int32 {
+        switch self {
+        case .noActivePlan:
+            return 0
+
+        case .periodExpired:
+            return 1
+
+        case .limitReached:
+            return 2
+
+        case .paymentFailed:
+            return 3
+        }
+    }
+
+    init?(cValue: Int32) {
+        switch cValue {
+        case 0:
+            self = .noActivePlan
+
+        case 1:
+            self = .periodExpired
+
+        case 2:
+            self = .limitReached
+
+        case 3:
+            self = .paymentFailed
+
+        default:
+            return nil
+        }
+    }
+}
+
+extension UsageInfo.ResetPeriod {
+    var cValue: Int32 {
+        switch self {
+        case .monthly:
+            return 0
+
+        case .annually:
+            return 1
+        }
+    }
+
+    init?(cValue: Int32) {
+        switch cValue {
+        case 0:
+            self = .monthly
+
+        case 1:
+            self = .annually
 
         default:
             return nil
