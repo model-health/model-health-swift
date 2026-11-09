@@ -11,9 +11,278 @@ private let metricDateFormatter: DateFormatter = {
 }()
 
 // swiftlint:disable type_body_length
+/// What a record reaches its neighbours through.
+///
+/// Owned separately from the provider that opened it: a record outlives the call that
+/// read it, and may outlive the client, so it cannot hold a borrow of provider state.
+/// Opened once per client, so every record read through one client shares what has
+/// already been fetched.
+///
+/// `Sendable` without checking: what it holds is safe to use from more than one task,
+/// and the reference it keeps never changes after init.
+internal final class NavigationContext: @unchecked Sendable {
+    let handle: UnsafeMutablePointer<ModelHealthNavigatorHandle>
+
+    init?(provider: UnsafeMutablePointer<ModelHealthProviderHandle>) {
+        guard let opened = model_health_navigator_new(provider) else {
+            return nil
+        }
+        handle = opened
+    }
+
+    deinit {
+        model_health_navigator_free(handle)
+    }
+}
+
+extension NavigationContext {
+    /// The subject a session belongs to, or `nil` when it has none.
+    ///
+    /// `subjectId` is what the session already carries; `nil` answers `nil` without
+    /// sending anything.
+    func subject(ofSession subjectId: Int?) async throws -> Subject? {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSubject = CSubject.emptySubject()
+            var found = false
+            let result = model_health_navigator_subject_of_session(
+                handle, Int32(subjectId ?? -1), &cSubject, &found
+            )
+            resumeOptionalSubject(continuation, result, cSubject, found, client: self)
+        }
+    }
+
+    /// The subject an activity belongs to, reached through its session.
+    func subject(ofActivityIn sessionId: String) async throws -> Subject? {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSubject = CSubject.emptySubject()
+            var found = false
+            let result = sessionId.withCString {
+                model_health_navigator_subject_of_activity(handle, $0, &cSubject, &found)
+            }
+            resumeOptionalSubject(continuation, result, cSubject, found, client: self)
+        }
+    }
+
+    /// The session an activity belongs to.
+    func session(ofActivityIn sessionId: String) async throws -> Session {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSession = CSession.emptySession()
+            let result = sessionId.withCString {
+                model_health_navigator_session_of_activity(handle, $0, &cSession)
+            }
+            resumeSession(continuation, result, cSession, client: self)
+        }
+    }
+
+    /// The subject with exactly this name, or `nil` when nobody has it.
+    func findSubject(_ name: String) async throws -> Subject? {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSubject = CSubject.emptySubject()
+            var found = false
+            let result = name.withCString {
+                model_health_navigator_find_subject(handle, $0, &cSubject, &found)
+            }
+            resumeOptionalSubject(continuation, result, cSubject, found, client: self)
+        }
+    }
+
+    /// Reads a subject again, forgetting what was remembered of it.
+    func refreshSubject(_ subjectId: Int) async throws -> Subject {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSubject = CSubject.emptySubject()
+            let result = model_health_navigator_refresh_subject(handle, Int32(subjectId), &cSubject)
+            resumeSubject(continuation, result, cSubject, client: self)
+        }
+    }
+
+    /// Reads a session again, forgetting what was remembered of it and of its subject.
+    func refreshSession(_ sessionId: String) async throws -> Session {
+        try await withCheckedThrowingContinuation { continuation in
+            var cSession = CSession.emptySession()
+            let result = sessionId.withCString {
+                model_health_navigator_refresh_session(handle, $0, &cSession)
+            }
+            resumeSession(continuation, result, cSession, client: self)
+        }
+    }
+
+    /// Forgets what was remembered of a session and of the subject it pointed to.
+    ///
+    /// For a write that moves the session to another subject. Sends nothing.
+    func forgetSession(_ sessionId: String) {
+        let result = sessionId.withCString { model_health_navigator_forget_session(handle, $0) }
+        if let message = result.error_message {
+            model_health_free_error(message)
+        }
+    }
+
+    /// Reads an activity again, forgetting what was remembered of it and of what it reaches.
+    func refreshActivity(_ activityId: String) async throws -> Activity {
+        try await withCheckedThrowingContinuation { continuation in
+            var cTrial = CTrial.emptyTrial()
+            let result = activityId.withCString {
+                model_health_navigator_refresh_activity(handle, $0, &cTrial)
+            }
+            if result.success {
+                do {
+                    let activity = try Activity.from(cTrial: cTrial, client: self)
+                    freeTrialFields(cTrial)
+                    continuation.resume(returning: activity)
+                } catch {
+                    freeTrialFields(cTrial)
+                    continuation.resume(throwing: ModelHealthError.internalError(error.localizedDescription))
+                }
+            } else {
+                continuation.resume(throwing: ffiError(result))
+            }
+        }
+    }
+}
+
+/// Hands over a subject that may be absent, freeing what the C side allocated either way.
+private func resumeOptionalSubject(
+    _ continuation: CheckedContinuation<Subject?, Error>,
+    _ result: FFIResult,
+    _ cSubject: CSubject,
+    _ found: Bool,
+    client: NavigationContext
+) {
+    guard result.success else {
+        continuation.resume(throwing: ffiError(result))
+        return
+    }
+    guard found else {
+        continuation.resume(returning: nil)
+        return
+    }
+    do {
+        let subject = try Subject.from(cSubject: cSubject, client: client)
+        freeSubjectFields(cSubject)
+        continuation.resume(returning: subject)
+    } catch {
+        freeSubjectFields(cSubject)
+        continuation.resume(throwing: ModelHealthError.internalError(error.localizedDescription))
+    }
+}
+
+private func resumeSubject(
+    _ continuation: CheckedContinuation<Subject, Error>,
+    _ result: FFIResult,
+    _ cSubject: CSubject,
+    client: NavigationContext
+) {
+    guard result.success else {
+        continuation.resume(throwing: ffiError(result))
+        return
+    }
+    do {
+        let subject = try Subject.from(cSubject: cSubject, client: client)
+        freeSubjectFields(cSubject)
+        continuation.resume(returning: subject)
+    } catch {
+        freeSubjectFields(cSubject)
+        continuation.resume(throwing: ModelHealthError.internalError(error.localizedDescription))
+    }
+}
+
+private func resumeSession(
+    _ continuation: CheckedContinuation<Session, Error>,
+    _ result: FFIResult,
+    _ cSession: CSession,
+    client: NavigationContext
+) {
+    guard result.success else {
+        continuation.resume(throwing: ffiError(result))
+        return
+    }
+    do {
+        let session = try Session.from(cSession: cSession, client: client)
+        freeSessionFields(cSession)
+        continuation.resume(returning: session)
+    } catch {
+        freeSessionFields(cSession)
+        continuation.resume(throwing: ModelHealthError.internalError(error.localizedDescription))
+    }
+}
+
+extension NavigationContext {
+    /// The sessions this subject was recorded in.
+    func sessions(
+        subjectId: Int,
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> SessionStream {
+        var stream: UnsafeMutablePointer<ModelHealthSessionStreamHandle>?
+        let opened = withOptionalCString(orderBy) { orderByPtr in
+            filterJSON.withCString { filterPtr in
+                model_health_navigator_subject_sessions_stream_new(
+                    handle, Int32(subjectId), filterPtr, orderByPtr, Int64(limit ?? -1), &stream
+                )
+            }
+        }
+
+        guard opened.success, let stream else {
+            return SessionStream(reader: ItemReader(source: unopened(ffiError(opened))))
+        }
+        return SessionStream(reader: ItemReader(source: sessionSource(stream: stream, client: self)))
+    }
+
+    /// The activities recorded for this subject.
+    func activities(
+        subjectId: Int,
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> ActivityStream {
+        var stream: UnsafeMutablePointer<ModelHealthActivityStreamHandle>?
+        let opened = withOptionalCString(orderBy) { orderByPtr in
+            filterJSON.withCString { filterPtr in
+                model_health_navigator_subject_activities_stream_new(
+                    handle, Int32(subjectId), filterPtr, orderByPtr, Int64(limit ?? -1), &stream
+                )
+            }
+        }
+
+        guard opened.success, let stream else {
+            return ActivityStream(reader: ItemReader(source: unopened(ffiError(opened))))
+        }
+        return ActivityStream(reader: ItemReader(source: activitySource(stream: stream, client: self)))
+    }
+
+    /// The activities recorded in this session.
+    func activities(
+        sessionId: String,
+        filterJSON: String,
+        orderBy: String?,
+        limit: Int?
+    ) -> ActivityStream {
+        var stream: UnsafeMutablePointer<ModelHealthActivityStreamHandle>?
+        let opened = withOptionalCString(orderBy) { orderByPtr in
+            sessionId.withCString { sessionPtr in
+                filterJSON.withCString { filterPtr in
+                    model_health_navigator_session_activities_stream_new(
+                        handle, sessionPtr, filterPtr, orderByPtr, Int64(limit ?? -1), &stream
+                    )
+                }
+            }
+        }
+
+        guard opened.success, let stream else {
+            return ActivityStream(reader: ItemReader(source: unopened(ffiError(opened))))
+        }
+        return ActivityStream(reader: ItemReader(source: activitySource(stream: stream, client: self)))
+    }
+}
+
 /// Internal implementation of ModelHealthProvider
 internal final class ModelHealthProviderImpl: ModelHealthProvider {
     private let handle: UnsafeMutablePointer<ModelHealthProviderHandle>
+
+    /// Handed to every record this provider reads, so the record can reach its
+    /// neighbours. One per client, so they all share what has already been fetched.
+    /// Always there: a client that could not open it is not created.
+    private let navigation: NavigationContext
 
     /// Retained context for the persistent log handler, if one is registered.
     ///
@@ -44,6 +313,15 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 }
             }
         }
+
+        // Opening it fails only for an invalid provider handle, which the guard above
+        // already rules out. Failing here rather than carrying on means a record read
+        // through this client can always navigate.
+        guard let navigation = NavigationContext(provider: self.handle) else {
+            model_health_provider_free(self.handle)
+            throw ModelHealthError.internalError("Failed to open navigation for this client")
+        }
+        self.navigation = navigation
     }
 
     deinit {
@@ -138,7 +416,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     var sessions: [Session] = []
                     if cArray.count > 0, let sessionsPtr = cArray.sessions {
                         sessions = try (0..<Int(cArray.count)).map { index in
-                            try Session.from(cSession: sessionsPtr[index])
+                            try Session.from(cSession: sessionsPtr[index], client: navigation)
                         }
                     }
                     continuation.resume(returning: sessions)
@@ -162,10 +440,11 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 user: 0,
                 is_public: false,
                 qrcode: nil,
-                subject: 0,
+                subject_id: 0,
                 trials_count: 0,
                 created_at: nil,
-                updated_at: nil
+                updated_at: nil,
+                embedded_activities: CTrialArray(trials: nil, count: 0)
             )
 
             let result = sessionId.withCString { sessionIdPtr in
@@ -174,7 +453,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let session = try Session.from(cSession: cSession)
+                    let session = try Session.from(cSession: cSession, client: navigation)
                     freeSessionFields(cSession)
                     continuation.resume(returning: session)
                 } catch {
@@ -198,10 +477,11 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 user: 0,
                 is_public: false,
                 qrcode: nil,
-                subject: 0,
+                subject_id: 0,
                 trials_count: 0,
                 created_at: nil,
-                updated_at: nil
+                updated_at: nil,
+                embedded_activities: CTrialArray(trials: nil, count: 0)
             )
 
             let result = session.id.withCString { sessionIdPtr in
@@ -210,7 +490,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let newSession = try Session.from(cSession: cSession)
+                    let newSession = try Session.from(cSession: cSession, client: navigation)
                     freeSessionFields(cSession)
                     continuation.resume(returning: newSession)
                 } catch {
@@ -234,10 +514,11 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 user: 0,
                 is_public: false,
                 qrcode: nil,
-                subject: 0,
+                subject_id: 0,
                 trials_count: 0,
                 created_at: nil,
-                updated_at: nil
+                updated_at: nil,
+                embedded_activities: CTrialArray(trials: nil, count: 0)
             )
 
             let result = session.id.withCString { sessionIdPtr in
@@ -246,7 +527,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let switched = try Session.from(cSession: cSession)
+                    let switched = try Session.from(cSession: cSession, client: navigation)
                     freeSessionFields(cSession)
                     continuation.resume(returning: switched)
                 } catch {
@@ -281,45 +562,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             return ActivityStream(reader: ItemReader(source: unopened(ffiError(opened))))
         }
 
-        let source = ItemSource<Activity>(
-            nextItems: {
-                try await withCheckedThrowingContinuation { continuation in
-                    var cArray = CTrialArray(trials: nil, count: 0)
-                    var total: UInt32 = 0
-                    var finished = false
-                    let result = model_health_activities_stream_next(stream, &cArray, &total, &finished)
-                    defer { model_health_free_trial_array(cArray) }
-                    resume(continuation, result, cArray) { index, itemsPtr in
-                        try Activity.from(cTrial: itemsPtr[index])
-                    }
-                }
-            },
-            readTotal: {
-                try await withCheckedThrowingContinuation { continuation in
-                    var total: UInt32 = 0
-                    let result = model_health_activities_stream_total(stream, &total)
-                    if result.success {
-                        continuation.resume(returning: Int(total))
-                    } else {
-                        continuation.resume(throwing: ffiError(result))
-                    }
-                }
-            },
-            readAll: {
-                try await withCheckedThrowingContinuation { continuation in
-                    var cArray = CTrialArray(trials: nil, count: 0)
-                    var total: UInt32 = 0
-                    let result = model_health_activities_stream_all(stream, &cArray, &total)
-                    defer { model_health_free_trial_array(cArray) }
-                    resume(continuation, result, cArray) { index, itemsPtr in
-                        try Activity.from(cTrial: itemsPtr[index])
-                    }
-                }
-            },
-            release: { model_health_activities_stream_free(stream) }
-        )
-
-        return ActivityStream(reader: ItemReader(source: source))
+        return ActivityStream(reader: ItemReader(source: activitySource(stream: stream, client: navigation)))
     }
 
     func subjectsStream(
@@ -340,6 +583,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             return SubjectStream(reader: ItemReader(source: unopened(ffiError(opened))))
         }
 
+        // Captured as a local: the closures below outlive this call.
+        let navigation = navigation
         let source = ItemSource<Subject>(
             nextItems: {
                 try await withCheckedThrowingContinuation { continuation in
@@ -349,7 +594,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     let result = model_health_subjects_stream_next(stream, &cArray, &total, &finished)
                     defer { model_health_free_subject_array(cArray) }
                     resume(continuation, result, cArray) { index, itemsPtr in
-                        try Subject.from(cSubject: itemsPtr[index])
+                        try Subject.from(cSubject: itemsPtr[index], client: navigation)
                     }
                 }
             },
@@ -371,7 +616,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     let result = model_health_subjects_stream_all(stream, &cArray, &total)
                     defer { model_health_free_subject_array(cArray) }
                     resume(continuation, result, cArray) { index, itemsPtr in
-                        try Subject.from(cSubject: itemsPtr[index])
+                        try Subject.from(cSubject: itemsPtr[index], client: navigation)
                     }
                 }
             },
@@ -399,45 +644,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             return SessionStream(reader: ItemReader(source: unopened(ffiError(opened))))
         }
 
-        let source = ItemSource<Session>(
-            nextItems: {
-                try await withCheckedThrowingContinuation { continuation in
-                    var cArray = CSessionArray(sessions: nil, count: 0)
-                    var total: UInt32 = 0
-                    var finished = false
-                    let result = model_health_sessions_stream_next(stream, &cArray, &total, &finished)
-                    defer { model_health_free_session_array(cArray) }
-                    resume(continuation, result, cArray) { index, itemsPtr in
-                        try Session.from(cSession: itemsPtr[index])
-                    }
-                }
-            },
-            readTotal: {
-                try await withCheckedThrowingContinuation { continuation in
-                    var total: UInt32 = 0
-                    let result = model_health_sessions_stream_total(stream, &total)
-                    if result.success {
-                        continuation.resume(returning: Int(total))
-                    } else {
-                        continuation.resume(throwing: ffiError(result))
-                    }
-                }
-            },
-            readAll: {
-                try await withCheckedThrowingContinuation { continuation in
-                    var cArray = CSessionArray(sessions: nil, count: 0)
-                    var total: UInt32 = 0
-                    let result = model_health_sessions_stream_all(stream, &cArray, &total)
-                    defer { model_health_free_session_array(cArray) }
-                    resume(continuation, result, cArray) { index, itemsPtr in
-                        try Session.from(cSession: itemsPtr[index])
-                    }
-                }
-            },
-            release: { model_health_sessions_stream_free(stream) }
-        )
-
-        return SessionStream(reader: ItemReader(source: source))
+        return SessionStream(reader: ItemReader(source: sessionSource(stream: stream, client: navigation)))
     }
 
     func groupsStream(
@@ -458,6 +665,8 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             return GroupStream(reader: ItemReader(source: unopened(ffiError(opened))))
         }
 
+        // Captured as a local: the closures below outlive this call.
+        let navigation = navigation
         let source = ItemSource<SubjectGroup>(
             nextItems: {
                 try await withCheckedThrowingContinuation { continuation in
@@ -499,6 +708,10 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         return GroupStream(reader: ItemReader(source: source))
     }
 
+    func find(subject name: String) async throws -> Subject? {
+        try await navigation.findSubject(name)
+    }
+
     func fetch(subject subjectId: Int) async throws -> Subject {
         try await withCheckedThrowingContinuation { continuation in
             var cSubject = CSubject.emptySubject()
@@ -507,7 +720,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let subject = try Subject.from(cSubject: cSubject)
+                    let subject = try Subject.from(cSubject: cSubject, client: navigation)
                     freeSubjectFields(cSubject)
                     continuation.resume(returning: subject)
                 } catch {
@@ -538,7 +751,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     var trials: [Activity] = []
                     if cArray.count > 0, let trialsPtr = cArray.trials {
                         trials = try (0..<Int(cArray.count)).map { index in
-                            try Activity.from(cTrial: trialsPtr[index])
+                            try Activity.from(cTrial: trialsPtr[index], client: navigation)
                         }
                     }
                     continuation.resume(returning: trials)
@@ -563,7 +776,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let activity = try Activity.from(cTrial: cTrial)
+                    let activity = try Activity.from(cTrial: cTrial, client: navigation)
                     continuation.resume(returning: activity)
                 } catch {
                     continuation.resume(
@@ -649,7 +862,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let updatedActivity = try Activity.from(cTrial: cTrial)
+                    let updatedActivity = try Activity.from(cTrial: cTrial, client: navigation)
                     continuation.resume(returning: updatedActivity)
                 } catch {
                     continuation.resume(
@@ -739,7 +952,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             let versionCode: Int32 = version == .raw ? 0 : 1
 
             let result = trial.id.withCString { trialId in
-                trial.session.withCString { sessionId in
+                trial.sessionId.withCString { sessionId in
                     model_health_download_trial_videos(
                         handle,
                         trialId,
@@ -797,7 +1010,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 var cArray = CMotionDataArray(items: nil, count: 0)
 
                 let result = trial.id.withCString { trialId in
-                    trial.session.withCString { sessionId in
+                    trial.sessionId.withCString { sessionId in
                         typeCodes.withUnsafeBufferPointer { buffer in
                             guard let baseAddress = buffer.baseAddress else {
                                 return FFIResult(
@@ -842,7 +1055,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 var cData = CData(data: nil, length: 0)
 
                 let result = trial.id.withCString { trialId in
-                    trial.session.withCString { sessionId in
+                    trial.sessionId.withCString { sessionId in
                         tag.withCString { tagPtr in
                             model_health_download_tagged_result_data(
                                 handle,
@@ -896,7 +1109,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             var cTrial = CTrial.emptyTrial()
 
             let result = trial.id.withCString { trialId in
-                trial.session.withCString { sessionId in
+                trial.sessionId.withCString { sessionId in
                     cFiles.withUnsafeBufferPointer { buffer in
                         guard let baseAddress = buffer.baseAddress else {
                             return FFIResult(
@@ -926,7 +1139,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let activity = try Activity.from(cTrial: cTrial)
+                    let activity = try Activity.from(cTrial: cTrial, client: navigation)
                     continuation.resume(returning: activity)
                 } catch {
                     continuation.resume(throwing: error)
@@ -952,7 +1165,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             var cArray = CAnalysisDataArray(items: nil, count: 0)
 
             let result = trial.id.withCString { trialId in
-                trial.session.withCString { sessionId in
+                trial.sessionId.withCString { sessionId in
                     typeCodes.withUnsafeBufferPointer { buffer in
                         guard let baseAddress = buffer.baseAddress else {
                             return FFIResult(
@@ -1002,6 +1215,71 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
         }
     }
 
+    func fetchArtifacts(_ artifacts: [ArtifactType], for activity: Activity) async throws -> FetchedArtifacts {
+        try await withCheckedThrowingContinuation { continuation in
+            let codes: [Int32] = artifacts.map(\.cValue)
+            var cArray = CArtifactOutcomeArray(items: nil, count: 0)
+
+            let result = activity.coreJSON().withCString { activityJSON in
+                codes.withUnsafeBufferPointer { buffer in
+                    model_health_fetch_artifacts(handle, activityJSON, buffer.baseAddress, UInt(codes.count), &cArray)
+                }
+            }
+
+            guard result.success else {
+                handleFFIError(result, continuation: continuation)
+                return
+            }
+
+            defer {
+                model_health_free_artifact_outcomes(cArray)
+            }
+
+            continuation.resume(returning: FetchedArtifacts(cOutcomes: cArray))
+        }
+    }
+
+    func downloadActivity(
+        _ activity: Activity,
+        to directory: URL,
+        artifacts: [ArtifactType],
+        stem: String?
+    ) async throws -> DownloadedArtifacts {
+        try await withCheckedThrowingContinuation { continuation in
+            let codes: [Int32] = artifacts.map(\.cValue)
+            var cArray = CArtifactOutcomeArray(items: nil, count: 0)
+
+            let result = activity.coreJSON().withCString { activityJSON in
+                directory.path.withCString { directoryPath in
+                    withOptionalCString(stem) { stemPtr in
+                        codes.withUnsafeBufferPointer { buffer in
+                            model_health_download_activity(
+                                handle,
+                                activityJSON,
+                                directoryPath,
+                                stemPtr,
+                                buffer.baseAddress,
+                                UInt(codes.count),
+                                &cArray
+                            )
+                        }
+                    }
+                }
+            }
+
+            guard result.success else {
+                handleFFIError(result, continuation: continuation)
+                return
+            }
+
+            defer {
+                model_health_free_artifact_outcomes(cArray)
+            }
+
+            continuation.resume(returning: DownloadedArtifacts(cOutcomes: cArray))
+        }
+    }
+
     // MARK: - Create Operations
 
     func createSession() async throws -> Session {
@@ -1013,16 +1291,17 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 user: 0,
                 is_public: false,
                 qrcode: nil,
-                subject: 0,
+                subject_id: 0,
                 trials_count: 0,
                 created_at: nil,
-                updated_at: nil
+                updated_at: nil,
+                embedded_activities: CTrialArray(trials: nil, count: 0)
             )
             let result = model_health_create_session(handle, &cSession)
 
             if result.success {
                 do {
-                    let session = try Session.from(cSession: cSession)
+                    let session = try Session.from(cSession: cSession, client: navigation)
                     freeSessionFields(cSession)
                     continuation.resume(returning: session)
                 } catch {
@@ -1079,7 +1358,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let subject = try Subject.from(cSubject: cSubject)
+                    let subject = try Subject.from(cSubject: cSubject, client: navigation)
                     freeSubjectFields(cSubject)
                     continuation.resume(returning: subject)
                 } catch {
@@ -1102,6 +1381,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             let cActivityType: Int32 = config?.activityType?.cValue ?? -1
             let cFramerate: Int32 = config?.config?.framerate.map(\.cValue) ?? -1
             let cFilterFrequency: Int32 = config?.config?.filterFrequency.map(\.cValue) ?? -1
+            let cCoreEngine: Int32 = config?.config?.coreEngine.map(\.cValue) ?? -1
 
             let addTagsJsonString: String? = {
                 guard let tags = config?.addTags, !tags.isEmpty else {
@@ -1129,6 +1409,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                                 cActivityType,
                                 cFramerate,
                                 cFilterFrequency,
+                                cCoreEngine,
                                 tagsPtr,
                                 &cTrial
                             )
@@ -1142,6 +1423,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                         cActivityType,
                         cFramerate,
                         cFilterFrequency,
+                        cCoreEngine,
                         nil,
                         &cTrial
                     )
@@ -1150,7 +1432,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let trial = try Activity.from(cTrial: cTrial)
+                    let trial = try Activity.from(cTrial: cTrial, client: navigation)
                     freeTrialFields(cTrial)
                     continuation.resume(returning: trial)
                 } catch {
@@ -1265,6 +1547,9 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                     contextPtr
                 )
             }
+            // Calibrating moves the session to this subject, even when a later step fails:
+            // what was remembered of it may point at the subject it had before.
+            navigation.forgetSession(session.id)
 
             Unmanaged<CallbackContext<CalibrationStatus>>.fromOpaque(contextPtr).release()
             handleFFIResult(result, continuation: continuation)
@@ -1293,10 +1578,11 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
                 user: 0,
                 is_public: false,
                 qrcode: nil,
-                subject: 0,
+                subject_id: 0,
                 trials_count: 0,
                 created_at: nil,
-                updated_at: nil
+                updated_at: nil,
+                embedded_activities: CTrialArray(trials: nil, count: 0)
             )
 
             let result: FFIResult = activitiesJson.withCString { activitiesJsonPtr in
@@ -1331,7 +1617,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
 
             if result.success {
                 do {
-                    let completedSession = try Session.from(cSession: cSession)
+                    let completedSession = try Session.from(cSession: cSession, client: navigation)
                     freeSessionFields(cSession)
                     continuation.resume(returning: completedSession)
                 } catch {
@@ -1356,7 +1642,7 @@ internal final class ModelHealthProviderImpl: ModelHealthProvider {
             var cTask = CAnalysis(task_id: nil)
 
             let result = activity.id.withCString { trialId in
-                activity.session.withCString { sessionId in
+                activity.sessionId.withCString { sessionId in
                     model_health_activity_status(
                         handle,
                         trialId,
@@ -1717,6 +2003,15 @@ extension ModelHealthError {
         case 7:
             return .notSupported
 
+        case 8:
+            return .notAttached(message)
+
+        case 9:
+            return .ambiguousMatch(message)
+
+        case 10:
+            return .notAvailable(message)
+
         default: // InternalError, InvalidApiKey, InvalidInput, or an unrecognized code
             return .internalError(message)
         }
@@ -1794,43 +2089,6 @@ private extension ModelHealthProviderImpl {
         )
     }
 
-    func freeSessionFields(_ session: CSession) {
-        session.id.map { model_health_free_string($0) }
-        session.name.map { model_health_free_string($0) }
-        session.session_name.map { model_health_free_string($0) }
-        session.qrcode.map { model_health_free_string($0) }
-        session.created_at.map { model_health_free_string($0) }
-        session.updated_at.map { model_health_free_string($0) }
-    }
-
-    func freeSubjectFields(_ subject: CSubject) {
-        subject.name.map { model_health_free_string($0) }
-        subject.characteristics.map { model_health_free_string($0) }
-        subject.first_name.map { model_health_free_string($0) }
-        subject.last_name.map { model_health_free_string($0) }
-        subject.tags.map { model_health_free_string($0) }
-        subject.last_activity.map { model_health_free_string($0) }
-        subject.created_at.map { model_health_free_string($0) }
-        subject.updated_at.map { model_health_free_string($0) }
-    }
-
-    func freeTrialFields(_ trial: CTrial) {
-        trial.id.map { model_health_free_string($0) }
-        trial.session.map { model_health_free_string($0) }
-        trial.name.map { model_health_free_string($0) }
-        trial.status.map { model_health_free_string($0) }
-        trial.tags.map { model_health_free_string($0) }
-        trial.created_at.map { model_health_free_string($0) }
-        trial.updated_at.map { model_health_free_string($0) }
-        trial.activity_type_name.map { model_health_free_string($0) }
-        trial.activity_type_display_name.map { model_health_free_string($0) }
-        trial.notes.map { model_health_free_string($0) }
-        trial.created_by.map { model_health_free_string($0) }
-        trial.analysis_status.map { model_health_free_string($0) }
-        model_health_free_video_array(trial.videos)
-        model_health_free_trial_result_array(trial.results)
-    }
-
     func makeCExternalResultFile(
         from file: ExternalResultFile,
         dataPtrs: inout [UnsafeMutablePointer<UInt8>],
@@ -1871,6 +2129,25 @@ private extension ModelHealthProviderImpl {
     }
 }
 
+private extension CSession {
+    /// A zeroed buffer for the C layer to write a session into.
+    static func emptySession() -> CSession {
+        CSession(
+            id: nil,
+            name: nil,
+            session_name: nil,
+            user: 0,
+            is_public: false,
+            qrcode: nil,
+            subject_id: -1,
+            trials_count: 0,
+            created_at: nil,
+            updated_at: nil,
+            embedded_activities: CTrialArray(trials: nil, count: 0)
+        )
+    }
+}
+
 private extension CSubject {
     /// A zeroed buffer for the C layer to write a subject into. Numeric fields carry
     /// the sentinel that stands for an absent value, so a partially written struct
@@ -1901,7 +2178,7 @@ private extension CTrial {
     static func emptyTrial() -> CTrial {
         return CTrial(
             id: nil,
-            session: nil,
+            session_id: nil,
             name: nil,
             status: nil,
             videos: CVideoArray(videos: nil, count: 0),
@@ -1916,7 +2193,14 @@ private extension CTrial {
             notes: nil,
             created_by: nil,
             analysis_status: nil,
-            trashed: false
+            framerate: nil,
+            filter_frequency: nil,
+            core_engine: nil,
+            trashed: false,
+            subject_id: -1,
+            subject_name: nil,
+            subject_first_name: nil,
+            subject_last_name: nil
         )
     }
 }
@@ -1946,6 +2230,51 @@ private class LogHandlerContext: @unchecked Sendable {
 
 // MARK: - Stream helpers
 
+private func freeSessionFields(_ session: CSession) {
+    session.id.map { model_health_free_string($0) }
+    session.name.map { model_health_free_string($0) }
+    session.session_name.map { model_health_free_string($0) }
+    session.qrcode.map { model_health_free_string($0) }
+    session.created_at.map { model_health_free_string($0) }
+    session.updated_at.map { model_health_free_string($0) }
+    model_health_free_trial_array(session.embedded_activities)
+}
+
+private func freeSubjectFields(_ subject: CSubject) {
+    subject.name.map { model_health_free_string($0) }
+    subject.characteristics.map { model_health_free_string($0) }
+    subject.first_name.map { model_health_free_string($0) }
+    subject.last_name.map { model_health_free_string($0) }
+    subject.tags.map { model_health_free_string($0) }
+    subject.last_activity.map { model_health_free_string($0) }
+    subject.created_at.map { model_health_free_string($0) }
+    subject.updated_at.map { model_health_free_string($0) }
+}
+
+private func freeTrialFields(_ trial: CTrial) {
+    trial.id.map { model_health_free_string($0) }
+    trial.session_id.map { model_health_free_string($0) }
+    trial.name.map { model_health_free_string($0) }
+    trial.status.map { model_health_free_string($0) }
+    trial.tags.map { model_health_free_string($0) }
+    trial.created_at.map { model_health_free_string($0) }
+    trial.updated_at.map { model_health_free_string($0) }
+    trial.activity_type_name.map { model_health_free_string($0) }
+    trial.activity_type_slug.map { model_health_free_string($0) }
+    trial.activity_type_display_name.map { model_health_free_string($0) }
+    trial.notes.map { model_health_free_string($0) }
+    trial.created_by.map { model_health_free_string($0) }
+    trial.analysis_status.map { model_health_free_string($0) }
+    trial.framerate.map { model_health_free_string($0) }
+    trial.filter_frequency.map { model_health_free_string($0) }
+    trial.core_engine.map { model_health_free_string($0) }
+    trial.subject_name.map { model_health_free_string($0) }
+    trial.subject_first_name.map { model_health_free_string($0) }
+    trial.subject_last_name.map { model_health_free_string($0) }
+    model_health_free_video_array(trial.videos)
+    model_health_free_trial_result_array(trial.results)
+}
+
 /// Turns a failed FFI result into the error it describes, freeing its message.
 private func ffiError(_ result: FFIResult) -> ModelHealthError {
     let message: String
@@ -1961,6 +2290,102 @@ private func ffiError(_ result: FFIResult) -> ModelHealthError {
         statusCode: result.error_status_code,
         message: message
     )
+}
+
+/// Wires an opened activity stream into what an ``ItemReader`` reads from.
+///
+/// Shared by the two ways a list of activities is opened — from the client and from a
+/// record read through one — because all that differs is which call opened the stream.
+internal func activitySource(
+    stream: UnsafeMutablePointer<ModelHealthActivityStreamHandle>,
+    client: NavigationContext?
+) -> ItemSource<Activity> {
+    ItemSource(
+        nextItems: {
+            try await withCheckedThrowingContinuation { continuation in
+                var cArray = CTrialArray(trials: nil, count: 0)
+                var total: UInt32 = 0
+                var finished = false
+                let result = model_health_activities_stream_next(stream, &cArray, &total, &finished)
+                defer { model_health_free_trial_array(cArray) }
+                resume(continuation, result, cArray) { index, itemsPtr in
+                    try Activity.from(cTrial: itemsPtr[index], client: client)
+                }
+            }
+        },
+        readTotal: {
+            try await withCheckedThrowingContinuation { continuation in
+                var total: UInt32 = 0
+                let result = model_health_activities_stream_total(stream, &total)
+                if result.success {
+                    continuation.resume(returning: Int(total))
+                } else {
+                    continuation.resume(throwing: ffiError(result))
+                }
+            }
+        },
+        readAll: {
+            try await withCheckedThrowingContinuation { continuation in
+                var cArray = CTrialArray(trials: nil, count: 0)
+                var total: UInt32 = 0
+                let result = model_health_activities_stream_all(stream, &cArray, &total)
+                defer { model_health_free_trial_array(cArray) }
+                resume(continuation, result, cArray) { index, itemsPtr in
+                    try Activity.from(cTrial: itemsPtr[index], client: client)
+                }
+            }
+        },
+        release: { model_health_activities_stream_free(stream) }
+    )
+}
+
+/// Wires an opened session stream into what an ``ItemReader`` reads from.
+internal func sessionSource(
+    stream: UnsafeMutablePointer<ModelHealthSessionStreamHandle>,
+    client: NavigationContext?
+) -> ItemSource<Session> {
+    ItemSource(
+        nextItems: {
+            try await withCheckedThrowingContinuation { continuation in
+                var cArray = CSessionArray(sessions: nil, count: 0)
+                var total: UInt32 = 0
+                var finished = false
+                let result = model_health_sessions_stream_next(stream, &cArray, &total, &finished)
+                defer { model_health_free_session_array(cArray) }
+                resume(continuation, result, cArray) { index, itemsPtr in
+                    try Session.from(cSession: itemsPtr[index], client: client)
+                }
+            }
+        },
+        readTotal: {
+            try await withCheckedThrowingContinuation { continuation in
+                var total: UInt32 = 0
+                let result = model_health_sessions_stream_total(stream, &total)
+                if result.success {
+                    continuation.resume(returning: Int(total))
+                } else {
+                    continuation.resume(throwing: ffiError(result))
+                }
+            }
+        },
+        readAll: {
+            try await withCheckedThrowingContinuation { continuation in
+                var cArray = CSessionArray(sessions: nil, count: 0)
+                var total: UInt32 = 0
+                let result = model_health_sessions_stream_all(stream, &cArray, &total)
+                defer { model_health_free_session_array(cArray) }
+                resume(continuation, result, cArray) { index, itemsPtr in
+                    try Session.from(cSession: itemsPtr[index], client: client)
+                }
+            }
+        },
+        release: { model_health_sessions_stream_free(stream) }
+    )
+}
+
+/// A source for a record with no client behind it: every read reports why.
+internal func unattached<Element>(_ typeName: String) -> ItemSource<Element> {
+    unopened(notAttached(typeName))
 }
 
 /// A source for a list that could not be opened: every read reports why.

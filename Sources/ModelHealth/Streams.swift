@@ -384,7 +384,7 @@ public struct GroupStream: AsyncSequence {
 
 // MARK: - Sort fields
 
-/// Sort field for ``ActivitiesResource/list(subject:calibrationSession:activityType:excludeCalibration:createdAfter:createdBefore:search:tags:createdBy:onlyCompleted:excludeAnalysisError:orderBy:limit:)``.
+/// Sort field for ``ActivitiesResource/list(subject:calibrationSession:session:activityType:excludeCalibration:createdAfter:createdBefore:search:tags:createdBy:onlyCompleted:excludeAnalysisError:orderBy:limit:)``.
 ///
 /// A `descending` case sorts newest/highest first.
 public enum ActivityOrderBy: String, Sendable {
@@ -427,9 +427,12 @@ public enum GroupOrderBy: String, Sendable {
 /// Wire shape of ``ActivityListFilter`` in the core layer.
 internal struct ActivityFilterPayload: Encodable {
     var subjectId: Int?
+    var subjectIds: [Int]?
     var calibrationSessionId: String?
+    var sessionId: String?
     var activityType: String?
     var activityTypeId: Int?
+    var activityTypes: [String]?
     var excludeCalibrate: Bool
     var excludeNeutral: Bool
     var createdAfter: String?

@@ -75,6 +75,8 @@ import Foundation
 /// - ``startAnalysis(_:for:in:)``
 /// - ``analysisStatus(for:)``
 /// - ``analysisData(ofType:for:)``
+/// - ``fetchArtifacts(_:for:)``
+/// - ``downloadActivity(_:to:artifacts:stem:)``
 public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     private let serviceProvider: ModelHealthProvider
 
@@ -412,6 +414,83 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
         await serviceProvider.analysisData(ofType: types, for: activity)
     }
 
+    /// Fetches an activity's results, each on its own.
+    ///
+    /// Every result asked for ends up in one of two places on the returned value:
+    /// ``FetchedArtifacts/data`` holds the bytes of each result that was fetched, and
+    /// ``FetchedArtifacts/errors`` holds the reason for each of the others. One result
+    /// failing does not stop the others. A result the activity does not have is in `errors`
+    /// as ``ModelHealthError/notAvailable(_:)``, whose message says whether trying again
+    /// later can help.
+    ///
+    /// Use ``Activity/hasResults`` to tell whether processing has finished.
+    ///
+    /// ```swift
+    /// let fetched = try await client.fetchArtifacts([.metrics, .report], for: activity)
+    /// for (kind, error) in fetched.errors {
+    ///     print("no \(kind): \(error)")
+    /// }
+    /// if let report = fetched.data[.report] {
+    ///     try report.write(to: URL(fileURLWithPath: "report.pdf"))
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - artifacts: The result types to fetch.
+    ///   - activity: The activity whose results to fetch.
+    /// - Returns: A ``FetchedArtifacts``.
+    /// - Throws: A ``ModelHealthError`` if the activity cannot be read or the network is
+    ///   unavailable.
+    public func fetchArtifacts(_ artifacts: [ArtifactType], for activity: Activity) async throws -> FetchedArtifacts {
+        try await serviceProvider.fetchArtifacts(artifacts, for: activity)
+    }
+
+    /// Saves an activity's results into a directory, one file each.
+    ///
+    /// Each file is named `stem` followed by a suffix fixed by its type: `_metrics.json`,
+    /// `_report.pdf`, `_data.zip` or `_kinematics.csv`. Without a `stem`, the activity's name
+    /// made safe for a file name is used with the first 8 characters of its id, or the whole
+    /// id when it has no name, so two activities with the same name do not overwrite each
+    /// other.
+    ///
+    /// The directory and its parents are created once there is a file to save, so an
+    /// activity with nothing to save leaves no empty directory. A file is written whole or
+    /// not at all, and replaces one already there.
+    ///
+    /// Every result asked for ends up in one of two places on the returned value:
+    /// ``DownloadedArtifacts/paths`` holds where each saved file now is, and
+    /// ``DownloadedArtifacts/errors`` holds the reason for each of the others. One result
+    /// failing, to download or to save, does not stop the others.
+    ///
+    /// ```swift
+    /// let saved = try await client.downloadActivity(
+    ///     activity,
+    ///     to: URL(fileURLWithPath: "results"),
+    ///     artifacts: [.report, .kinematicsCsv]
+    /// )
+    /// for (kind, url) in saved.paths {
+    ///     print("\(kind): \(url.path)")
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - activity: The activity whose results to save.
+    ///   - directory: The directory to save into.
+    ///   - artifacts: The result types to save.
+    ///   - stem: The start of each file name. Must be a plain file name, without a directory
+    ///     part. `nil` uses the default described above.
+    /// - Returns: A ``DownloadedArtifacts``.
+    /// - Throws: A ``ModelHealthError`` if the activity cannot be read, the network is
+    ///   unavailable, or `stem` is not a plain file name.
+    public func downloadActivity(
+        _ activity: Activity,
+        to directory: URL,
+        artifacts: [ArtifactType],
+        stem: String? = nil
+    ) async throws -> DownloadedArtifacts {
+        try await serviceProvider.downloadActivity(activity, to: directory, artifacts: artifacts, stem: stem)
+    }
+
     // MARK: - Subject Management
 
     /// Retrieves a subject by its ID.
@@ -420,7 +499,7 @@ public final class ModelHealthClient: ObservableObject, @unchecked Sendable {
     /// subject details without fetching the entire subject list.
     ///
     /// ```swift
-    /// let subject = try await client.fetch(subject: session.subject)
+    /// let subject = try await client.fetch(subject: session.subjectId)
     /// print("Subject: \(subject.name)")
     /// ```
     ///
@@ -1048,6 +1127,9 @@ public protocol ModelHealthProvider {
     /// See ``ModelHealthClient/fetch(subject:)``
     func fetch(subject subjectId: Int) async throws -> Subject
 
+    /// See ``SubjectsResource/find(name:)``
+    func find(subject name: String) async throws -> Subject?
+
     /// See ``ModelHealthClient/fetch(activity:)``
     func fetch(activity activityId: String) async throws -> Activity
 
@@ -1077,6 +1159,17 @@ public protocol ModelHealthProvider {
         ofType types: Set<AnalysisDataType>,
         for activity: Activity
     ) async -> [AnalysisData]
+
+    /// See ``ModelHealthClient/fetchArtifacts(_:for:)``
+    func fetchArtifacts(_ artifacts: [ArtifactType], for activity: Activity) async throws -> FetchedArtifacts
+
+    /// See ``ModelHealthClient/downloadActivity(_:to:artifacts:stem:)``
+    func downloadActivity(
+        _ activity: Activity,
+        to directory: URL,
+        artifacts: [ArtifactType],
+        stem: String?
+    ) async throws -> DownloadedArtifacts
 
     /// See ``ModelHealthClient/createSession()``
     func createSession() async throws -> Session
@@ -1193,6 +1286,27 @@ public extension ModelHealthProvider {
     }
 
     /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `fetchArtifacts(_:for:)` has no results to fetch.
+    func fetchArtifacts(_ artifacts: [ArtifactType], for activity: Activity) async throws -> FetchedArtifacts {
+        throw ModelHealthError.internalError(
+            "fetchArtifacts(_:for:) is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `downloadActivity(_:to:artifacts:stem:)` has no results to save.
+    func downloadActivity(
+        _ activity: Activity,
+        to directory: URL,
+        artifacts: [ArtifactType],
+        stem: String?
+    ) async throws -> DownloadedArtifacts {
+        throw ModelHealthError.internalError(
+            "downloadActivity(_:to:artifacts:stem:) is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
     /// implemented `switchSubject(to:in:)` has no session to point the cameras at.
     func switchSubject(to subject: Subject, in session: Session) async throws -> Session {
         throw ModelHealthError.internalError(
@@ -1205,6 +1319,14 @@ public extension ModelHealthProvider {
     func fetch(subject subjectId: Int) async throws -> Subject {
         throw ModelHealthError.internalError(
             "fetch(subject:) is not implemented by \(type(of: self))"
+        )
+    }
+
+    /// Throws ``ModelHealthError/internalError(_:)``, as a conformer that has not
+    /// implemented `find(subject:)` has nowhere to look.
+    func find(subject name: String) async throws -> Subject? {
+        throw ModelHealthError.internalError(
+            "find(subject:) is not implemented by \(type(of: self))"
         )
     }
 
@@ -1313,6 +1435,25 @@ public enum ModelHealthError: Error, Sendable, Equatable {
 
     /// The requested operation is not supported by this client configuration
     case notSupported
+
+    /// A record with no client behind it was asked to reach a related record.
+    ///
+    /// Values made by hand — a preview, a test double, a decoded literal — have no
+    /// client to read through, so they can report what they already hold and nothing
+    /// more. Read the record through a ``ModelHealthClient`` to navigate from it.
+    case notAttached(String)
+
+    /// A lookup by name matched more than one record.
+    ///
+    /// The message lists the ids that matched, so you can pick one with
+    /// ``ModelHealthClient/fetch(subject:)``.
+    case ambiguousMatch(String)
+
+    /// An activity has no such result: it is still being processed, or processing finished
+    /// without producing it.
+    ///
+    /// The message says which, so you can tell whether trying again later can help.
+    case notAvailable(String)
 }
 
 /// Deprecated alias for ``ModelHealthClient``.

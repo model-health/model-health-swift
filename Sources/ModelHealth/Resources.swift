@@ -24,8 +24,21 @@ public struct ActivitiesResource {
     ///
     /// - Parameters:
     ///   - subject: Only activities belonging to this subject.
-    ///   - calibrationSession: Only activities recorded under this calibration session.
+    ///   - subjects: Only activities belonging to any of these subjects, in one request
+    ///     rather than one per subject. Together with `subject`, matches activities of
+    ///     `subject` *or* any of `subjects` (a union, not an intersection). Every subject
+    ///     must be one you may view. Each activity's ``Activity/subjectInfo`` says whose it is.
+    ///     An empty list is refused when the stream is first read, rather than read as
+    ///     every subject: pass `nil` to match them all. Requires the V2 API: on a V1
+    ///     provider, reading the stream throws a not-supported error.
+    ///   - calibrationSession: Only activities recorded under this calibration session: the
+    ///     session itself and every session that reuses its calibration.
+    ///   - session: Only activities recorded in this session, and that session only.
     ///   - activityType: Only activities of this type.
+    ///   - activityTypes: Only activities of any of these types. Together with
+    ///     `activityType`, matches either (a union). An empty list is refused when the
+    ///     stream is first read, rather than read as every type: pass `nil` to match them
+    ///     all. Requires the V2 API, as `subjects`.
     ///   - excludeCalibration: Excludes calibration and neutral-pose activities. Default
     ///     `true`, since these are rarely what you want when browsing a subject's history.
     ///   - createdAfter: Only activities created on or after this date, inclusive. The day
@@ -43,8 +56,11 @@ public struct ActivitiesResource {
     /// - Returns: An ``ActivityStream`` you iterate directly.
     public func list(
         subject: Subject? = nil,
+        subjects: [Subject]? = nil,
         calibrationSession: Session? = nil,
+        session: Session? = nil,
         activityType: ActivityTypeInfo? = nil,
+        activityTypes: [ActivityTypeInfo]? = nil,
         excludeCalibration: Bool = true,
         createdAfter: Date? = nil,
         createdBefore: Date? = nil,
@@ -58,9 +74,12 @@ public struct ActivitiesResource {
     ) -> ActivityStream {
         let filter = ActivityFilterPayload(
             subjectId: subject?.id,
+            subjectIds: subjects?.map(\.id),
             calibrationSessionId: calibrationSession?.id,
+            sessionId: session?.id,
             activityType: activityType?.name,
             activityTypeId: nil,
+            activityTypes: activityTypes?.map(\.name),
             excludeCalibrate: excludeCalibration,
             excludeNeutral: excludeCalibration,
             createdAfter: formatFilterDate(createdAfter),
@@ -92,6 +111,22 @@ public struct SubjectsResource {
 
     internal init(provider: ModelHealthProvider) {
         self.provider = provider
+    }
+
+    /// The subject with exactly this name, or `nil` when nobody has it.
+    ///
+    /// `search` on ``list(search:createdAfter:createdBefore:groups:tags:createdBy:activityType:activityComplete:session:orderBy:limit:)``
+    /// narrows by substring; this matches the whole name, ignoring case. A prefix is not
+    /// a name, and no match is `nil` rather than an error.
+    ///
+    /// - Parameter name: The subject's full name.
+    /// - Returns: The ``Subject``, or `nil` when nobody has this name.
+    /// - Throws: ``ModelHealthError/ambiguousMatch(_:)`` when more than one subject has
+    ///   this name — the message lists their ids, so you can pick one with
+    ///   ``ModelHealthClient/fetch(subject:)``. A blank name is refused before anything
+    ///   is sent.
+    public func find(name: String) async throws -> Subject? {
+        try await provider.find(subject: name)
     }
 
     /// Lazily lists subjects matching the given filters.

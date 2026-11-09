@@ -64,7 +64,16 @@ private func parseFFIStringArray(_ cString: UnsafePointer<CChar>?) -> [String] {
 }
 
 extension Session {
-    internal static func from(cSession: CSession) throws -> Session {
+    /// The activities that arrived with a session, each attached to the same client.
+    private static func embeddedActivities(
+        of cSession: CSession, client: NavigationContext?
+    ) throws -> [Activity] {
+        let array = cSession.embedded_activities
+        guard let trials = array.trials else { return [] }
+        return try (0..<Int(array.count)).map { try Activity.from(cTrial: trials[$0], client: client) }
+    }
+
+    internal static func from(cSession: CSession, client: NavigationContext?) throws -> Session {
         guard let id = cSession.id else {
             throw FFIConversionError.nullPointer("Session ID is null")
         }
@@ -84,11 +93,12 @@ extension Session {
             name: String(cString: name),
             sessionName: String(cString: sessionName),
             qrcode: cSession.qrcode.map { String(cString: $0) },
-            activities: [],
-            subject: cSession.subject == -1 ? nil : Int(cSession.subject),
+            subjectId: cSession.subject_id == -1 ? nil : Int(cSession.subject_id),
             activitiesCount: Int(cSession.trials_count),
+            embeddedActivities: try embeddedActivities(of: cSession, client: client),
             createdAt: try parseFFIDate(cSession.created_at, fieldName: "Session createdAt"),
-            updatedAt: try parseFFIDate(cSession.updated_at, fieldName: "Session updatedAt")
+            updatedAt: try parseFFIDate(cSession.updated_at, fieldName: "Session updatedAt"),
+            client: client
         )
     }
 }
@@ -140,7 +150,7 @@ extension UsageInfo {
 }
 
 extension Subject {
-    internal static func from(cSubject: CSubject) throws -> Subject {
+    internal static func from(cSubject: CSubject, client: NavigationContext?) throws -> Subject {
         guard let name = cSubject.name else {
             throw FFIConversionError.nullPointer("Subject name is null")
         }
@@ -165,7 +175,8 @@ extension Subject {
             activityCount: cSubject.activity_count == -1 ? nil : Int(cSubject.activity_count),
             lastActivity: try parseOptionalFFIDate(cSubject.last_activity, fieldName: "Subject lastActivity"),
             createdAt: try parseOptionalFFIDate(cSubject.created_at, fieldName: "Subject createdAt"),
-            updatedAt: try parseOptionalFFIDate(cSubject.updated_at, fieldName: "Subject updatedAt")
+            updatedAt: try parseOptionalFFIDate(cSubject.updated_at, fieldName: "Subject updatedAt"),
+            client: client
         )
     }
 }
@@ -205,12 +216,12 @@ extension Activity.Result {
 }
 
 extension Activity {
-    internal static func from(cTrial: CTrial) throws -> Activity {
+    internal static func from(cTrial: CTrial, client: NavigationContext?) throws -> Activity {
         guard let id = cTrial.id else {
             throw FFIConversionError.nullPointer("Trial ID is null")
         }
 
-        guard let session = cTrial.session else {
+        guard let session = cTrial.session_id else {
             throw FFIConversionError.nullPointer("Trial session is null")
         }
 
@@ -246,21 +257,41 @@ extension Activity {
             )
         }
 
+        let subject: ActivitySubject?
+        if cTrial.subject_id == -1 {
+            subject = nil
+        } else {
+            guard let subjectName = cTrial.subject_name else {
+                throw FFIConversionError.nullPointer("Activity subject name is null")
+            }
+            subject = ActivitySubject(
+                id: Int(cTrial.subject_id),
+                name: String(cString: subjectName),
+                firstName: cTrial.subject_first_name.map { String(cString: $0) },
+                lastName: cTrial.subject_last_name.map { String(cString: $0) }
+            )
+        }
+
         return Activity(
             id: String(cString: id),
-            session: String(cString: session),
+            sessionId: String(cString: session),
             name: cTrial.name.map { String(cString: $0) },
             status: String(cString: status),
             videos: videos,
             results: results,
             activityType: activityType,
+            subjectInfo: subject,
             tags: tags,
             notes: cTrial.notes.map { String(cString: $0) },
             createdBy: cTrial.created_by.map { String(cString: $0) },
             analysisStatus: cTrial.analysis_status.map { String(cString: $0) },
+            framerate: cTrial.framerate.map { String(cString: $0) },
+            filterFrequency: cTrial.filter_frequency.map { String(cString: $0) },
+            coreEngine: cTrial.core_engine.map { String(cString: $0) },
             trashed: cTrial.trashed,
             createdAt: try parseFFIDate(cTrial.created_at, fieldName: "Activity createdAt"),
-            updatedAt: try parseFFIDate(cTrial.updated_at, fieldName: "Activity updatedAt")
+            updatedAt: try parseFFIDate(cTrial.updated_at, fieldName: "Activity updatedAt"),
+            client: client
         )
     }
 }
@@ -873,6 +904,9 @@ extension SessionCoreEngine {
 
         case .v1_0:
             return 2
+
+        case .v2_0:
+            return 3
         }
     }
 }

@@ -20,13 +20,25 @@ public struct Session: Identifiable, Sendable {
     public let name: String
     public let sessionName: String
     public let qrcode: String?
-    public let activities: [Activity]
     /// ID of the subject this session belongs to, if assigned. A bare ID, not a
     /// ``Subject`` object.
-    public let subject: Int?
+    public let subjectId: Int?
     public let activitiesCount: Int
+    /// The activities that arrived with this session, as they were when it was read.
+    ///
+    /// Everything recorded in it, calibration and neutral included, unfiltered. Reading it
+    /// sends nothing; for a filtered list read now, call `activities(...)`.
+    public let embeddedActivities: [Activity]
     public let createdAt: Date
     public let updatedAt: Date
+
+    /// The client this record was read through, or `nil` when it was built by hand.
+    ///
+    /// Not part of the public surface: it is what the navigating members read through,
+    /// and nothing a caller has business reaching into. A value made by hand — a
+    /// preview, a test double — has none, and navigating from it reports
+    /// ``ModelHealthError/notAttached(_:)``.
+    internal let client: NavigationContext?
 }
 
 extension Session: Equatable {
@@ -109,13 +121,222 @@ public struct Subject: Identifiable, Sendable {
 
     /// When this subject record was last modified, or `nil` if not reported.
     public let updatedAt: Date?
+
+    /// The client this record was read through, or `nil` when it was built by hand.
+    ///
+    /// Not part of the public surface: it is what the navigating members read through,
+    /// and nothing a caller has business reaching into. A value made by hand — a
+    /// preview, a test double — has none, and navigating from it reports
+    /// ``ModelHealthError/notAttached(_:)``.
+    internal let client: NavigationContext?
 }
 
 extension Subject: Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
+
+    public static func == (lhs: Subject, rhs: Subject) -> Bool {
+        lhs.id == rhs.id
+    }
 }
+
+// MARK: - Links between records
+
+extension Subject {
+    /// The sessions this subject was recorded in.
+    ///
+    /// Nothing is sent until the stream is read. A subject built by hand has no client to
+    /// read through, and the first read reports ``ModelHealthError/notAttached(_:)``.
+    ///
+    /// - Parameters:
+    ///   - orderBy: Field to sort by. Defaults to newest first.
+    ///   - limit: Caps the total number of sessions the stream yields. `nil` iterates
+    ///     every match.
+    /// - Returns: A ``SessionStream`` you iterate directly.
+    public func sessions(
+        orderBy: SessionOrderBy? = nil,
+        limit: Int? = nil
+    ) -> SessionStream {
+        guard let client else {
+            return SessionStream(reader: ItemReader(source: unattached("Subject")))
+        }
+        return client.sessions(
+            subjectId: id,
+            filterJSON: encodeFilter(SessionFilterPayload(subjectId: nil)),
+            orderBy: orderBy?.rawValue,
+            limit: limit
+        )
+    }
+
+    /// The activities recorded for this subject.
+    ///
+    /// Takes the same filters as ``ActivitiesResource/list(subject:calibrationSession:session:activityType:excludeCalibration:createdAfter:createdBefore:search:tags:createdBy:onlyCompleted:excludeAnalysisError:orderBy:limit:)``;
+    /// only the subject is already decided. Nothing is sent until the stream is read.
+    ///
+    /// - Returns: An ``ActivityStream`` you iterate directly.
+    public func activities(
+        calibrationSession: Session? = nil,
+        session: Session? = nil,
+        activityType: ActivityTypeInfo? = nil,
+        excludeCalibration: Bool = true,
+        createdAfter: Date? = nil,
+        createdBefore: Date? = nil,
+        search: String? = nil,
+        tags: [String]? = nil,
+        createdBy: [Int]? = nil,
+        onlyCompleted: Bool = false,
+        excludeAnalysisError: Bool = false,
+        orderBy: ActivityOrderBy? = nil,
+        limit: Int? = nil
+    ) -> ActivityStream {
+        guard let client else {
+            return ActivityStream(reader: ItemReader(source: unattached("Subject")))
+        }
+        let filter = ActivityFilterPayload(
+            subjectId: nil,
+            calibrationSessionId: calibrationSession?.id,
+            sessionId: session?.id,
+            activityType: activityType?.name,
+            activityTypeId: nil,
+            excludeCalibrate: excludeCalibration,
+            excludeNeutral: excludeCalibration,
+            createdAfter: formatFilterDate(createdAfter),
+            createdBefore: formatFilterDate(createdBefore),
+            search: search,
+            tags: tags,
+            createdBy: createdBy,
+            onlyCompleted: onlyCompleted,
+            excludeAnalysisError: excludeAnalysisError
+        )
+        return client.activities(
+            subjectId: id,
+            filterJSON: encodeFilter(filter),
+            orderBy: orderBy?.rawValue,
+            limit: limit
+        )
+    }
+}
+
+extension Session {
+    /// The activities recorded in this session.
+    ///
+    /// Takes the same filters as ``ActivitiesResource/list(subject:calibrationSession:session:activityType:excludeCalibration:createdAfter:createdBefore:search:tags:createdBy:onlyCompleted:excludeAnalysisError:orderBy:limit:)``;
+    /// only the session is already decided. Nothing is sent until the stream is read.
+    ///
+    /// - Returns: An ``ActivityStream`` you iterate directly.
+    public func activities(
+        subject: Subject? = nil,
+        activityType: ActivityTypeInfo? = nil,
+        excludeCalibration: Bool = true,
+        createdAfter: Date? = nil,
+        createdBefore: Date? = nil,
+        search: String? = nil,
+        tags: [String]? = nil,
+        createdBy: [Int]? = nil,
+        onlyCompleted: Bool = false,
+        excludeAnalysisError: Bool = false,
+        orderBy: ActivityOrderBy? = nil,
+        limit: Int? = nil
+    ) -> ActivityStream {
+        guard let client else {
+            return ActivityStream(reader: ItemReader(source: unattached("Session")))
+        }
+        let filter = ActivityFilterPayload(
+            subjectId: subject?.id,
+            calibrationSessionId: nil,
+            sessionId: nil,
+            activityType: activityType?.name,
+            activityTypeId: nil,
+            excludeCalibrate: excludeCalibration,
+            excludeNeutral: excludeCalibration,
+            createdAfter: formatFilterDate(createdAfter),
+            createdBefore: formatFilterDate(createdBefore),
+            search: search,
+            tags: tags,
+            createdBy: createdBy,
+            onlyCompleted: onlyCompleted,
+            excludeAnalysisError: excludeAnalysisError
+        )
+        return client.activities(
+            sessionId: id,
+            filterJSON: encodeFilter(filter),
+            orderBy: orderBy?.rawValue,
+            limit: limit
+        )
+    }
+}
+
+extension Session {
+    /// The subject this session belongs to, or `nil` when it has none.
+    ///
+    /// May perform one request the first time; the answer is kept, so reading it again
+    /// costs nothing. ``subjectId`` is a field and never sends anything.
+    ///
+    /// - Throws: ``ModelHealthError/notAttached(_:)`` when this session was built by
+    ///   hand, or a ``ModelHealthError`` on request failure.
+    public var subject: Subject? {
+        get async throws {
+            guard let client else { throw notAttached("Session") }
+            return try await client.subject(ofSession: subjectId)
+        }
+    }
+
+    /// Reads this session again, forgetting what was remembered of it and of its subject.
+    ///
+    /// Returns a new session rather than changing this one, which is read-only.
+    public func refresh() async throws -> Session {
+        guard let client else { throw notAttached("Session") }
+        return try await client.refreshSession(id)
+    }
+}
+
+extension Activity {
+    /// The session this activity belongs to.
+    ///
+    /// May perform one request the first time; the answer is kept. ``sessionId`` is a
+    /// field and never sends anything.
+    ///
+    /// - Throws: ``ModelHealthError/notAttached(_:)`` when this activity was built by
+    ///   hand, or a ``ModelHealthError`` on request failure.
+    public var session: Session {
+        get async throws {
+            guard let client else { throw notAttached("Activity") }
+            return try await client.session(ofActivityIn: sessionId)
+        }
+    }
+
+    /// The subject this activity belongs to, or `nil` when its session has none.
+    ///
+    /// Reached through the session, so it may perform up to two requests the first time.
+    /// Both are kept, and each on its own — the second activity of a session pays for
+    /// neither.
+    public var subject: Subject? {
+        get async throws {
+            guard let client else { throw notAttached("Activity") }
+            return try await client.subject(ofActivityIn: sessionId)
+        }
+    }
+
+    /// Reads this activity again, forgetting what was remembered of it and of the session
+    /// and subject it reaches.
+    public func refresh() async throws -> Activity {
+        guard let client else { throw notAttached("Activity") }
+        return try await client.refreshActivity(id)
+    }
+}
+
+extension Subject {
+    /// Reads this subject again, forgetting what was remembered of it.
+    ///
+    /// Returns a new subject rather than changing this one, which is read-only.
+    public func refresh() async throws -> Subject {
+        guard let client else { throw notAttached("Subject") }
+        return try await client.refreshSubject(id)
+    }
+}
+
+
 
 // MARK: - AccountInfo
 
@@ -320,7 +541,7 @@ public struct Activity: Sendable {
 
     public let id: String
     /// ID of the parent session. A bare ID, not a ``Session`` object.
-    public let session: String
+    public let sessionId: String
     public let name: String?
     public let status: String
     public let videos: [Video]
@@ -330,6 +551,13 @@ public struct Activity: Sendable {
     /// Carries `{id, name, displayName}` through unchanged — including a type this
     /// SDK build doesn't recognize.
     public let activityType: ActivityTypeInfo?
+    /// A summary of the subject the activity was recorded for, if it has one.
+    ///
+    /// Lets a list that spans several subjects tell whose activity each row is. Reading it
+    /// costs nothing; for the subject itself, read on first access, see ``subject``. `nil`
+    /// for an activity whose session has no subject, and for one not loaded through a path
+    /// that reports it (for example, nested inside a session).
+    public let subjectInfo: ActivitySubject?
     /// Tags applied to this activity.
     public let tags: [String]
     /// Free-text notes attached to the activity, if any.
@@ -340,10 +568,27 @@ public struct Activity: Sendable {
     /// when this activity was not loaded through a path that reports it (for
     /// example, nested inside a session).
     public let analysisStatus: String?
+    /// Frame rate this activity was recorded at, as the server stores it (e.g. `"120"`),
+    /// or `nil` when it uses the session's setting.
+    public let framerate: String?
+    /// Low-pass filter frequency for this activity, as the server stores it (`"default"`
+    /// or a value in Hz such as `"12"`), or `nil` when it uses the session's setting.
+    public let filterFrequency: String?
+    /// Core engine version for this activity, as the server stores it (e.g. `"v2.0"`),
+    /// or `nil` when it uses the session's setting.
+    public let coreEngine: String?
     /// Whether the activity is in the trash.
     public let trashed: Bool
     public let createdAt: Date
     public let updatedAt: Date
+
+    /// The client this record was read through, or `nil` when it was built by hand.
+    ///
+    /// Not part of the public surface: it is what the navigating members read through,
+    /// and nothing a caller has business reaching into. A value made by hand — a
+    /// preview, a test double — has none, and navigating from it reports
+    /// ``ModelHealthError/notAttached(_:)``.
+    internal let client: NavigationContext?
 }
 
 /// A tag that can be applied to activities for categorization.
@@ -532,6 +777,59 @@ public struct AnalysisData: Sendable {
 
     /// The raw file data. Parse according to the format implied by ``type``.
     public let data: Data
+}
+
+// MARK: - Artifacts
+
+/// The results an activity can produce, as one fetch or download names them.
+///
+/// Pass one or more values to ``ModelHealthClient/fetchArtifacts(_:for:)`` or
+/// ``ModelHealthClient/downloadActivity(_:to:artifacts:stem:)``. Each type has a fixed format.
+///
+/// ```swift
+/// let saved = try await client.downloadActivity(
+///     activity,
+///     to: folder,
+///     artifacts: [.report, .kinematicsCsv]
+/// )
+/// ```
+public enum ArtifactType: String, CaseIterable, Hashable, Sendable {
+    /// The activity's metrics, grouped as they are shown on the dashboard. JSON format.
+    case metrics
+
+    /// Analysis report. PDF format.
+    case report
+
+    /// Raw analysis data. ZIP format.
+    case data
+
+    /// Joint angles over time. CSV format.
+    case kinematicsCsv
+}
+
+/// What fetching an activity's results produced.
+///
+/// Every result asked for is in exactly one of the two dictionaries: one result failing does
+/// not stop the others.
+public struct FetchedArtifacts: Sendable {
+    /// The bytes of each result that was fetched, by result type.
+    public let data: [ArtifactType: Data]
+
+    /// Why each of the others was not fetched, by result type. A result the activity does
+    /// not have is ``ModelHealthError/notAvailable(_:)``.
+    public let errors: [ArtifactType: ModelHealthError]
+}
+
+/// What saving an activity's results into a directory produced.
+///
+/// Every result asked for is in exactly one of the two dictionaries, as with
+/// ``FetchedArtifacts``; a file that could not be written is in ``errors``.
+public struct DownloadedArtifacts: Sendable {
+    /// Where each result that was saved now is, by result type.
+    public let paths: [ArtifactType: URL]
+
+    /// Why each of the others was not saved, by result type.
+    public let errors: [ArtifactType: ModelHealthError]
 }
 
 // MARK: - Checkerboard Placement
@@ -775,6 +1073,35 @@ public struct ActivityTypeInfo: Sendable, Equatable {
     }
 }
 
+/// The subject an activity was recorded for, as reported alongside the activity.
+///
+/// A summary of ``Subject``: enough to label a row. Read the full record with
+/// ``ModelHealthClient/subjects`` when more is needed.
+public struct ActivitySubject: Sendable, Equatable {
+    /// The subject's id, as in ``Subject/id``.
+    public let id: Int
+
+    /// The subject's full name, joined from ``firstName`` and ``lastName``.
+    public let name: String
+
+    /// Given name, if reported.
+    public let firstName: String?
+
+    /// Family name, if reported.
+    public let lastName: String?
+
+    /// Rebuilds a subject summary from values kept from an earlier read.
+    ///
+    /// Normally one comes off an activity; this is for a caller who stored the fields
+    /// instead of the value.
+    public init(id: Int, name: String, firstName: String? = nil, lastName: String? = nil) {
+        self.id = id
+        self.name = name
+        self.firstName = firstName
+        self.lastName = lastName
+    }
+}
+
 /// Available analysis types for motion capture activities.
 ///
 /// Analysis can only be performed on activities that have reached `.ready` status.
@@ -836,9 +1163,17 @@ public struct RecordingConfig: Sendable {
     /// Low-pass filter frequency override. `nil` uses the session default.
     public var filterFrequency: FilterFrequency?
 
-    public init(framerate: SessionFramerate? = nil, filterFrequency: FilterFrequency? = nil) {
+    /// Core engine version override. `nil` uses the session default.
+    public var coreEngine: SessionCoreEngine?
+
+    public init(
+        framerate: SessionFramerate? = nil,
+        filterFrequency: FilterFrequency? = nil,
+        coreEngine: SessionCoreEngine? = nil
+    ) {
         self.framerate = framerate
         self.filterFrequency = filterFrequency
+        self.coreEngine = coreEngine
     }
 }
 
@@ -1033,6 +1368,9 @@ public enum SessionCoreEngine: CaseIterable, Sendable {
 
     /// Version 1.0 (default).
     case v1_0
+
+    /// Version 2.0.
+    case v2_0
 }
 
 /// Frequency of the low-pass filter applied to kinematic results.
@@ -1298,9 +1636,9 @@ extension Session {
         public var name = "Preview Session"
         public var sessionName = "Session Name"
         public var qrcode: String? = "https://example.com/qr.png"
-        public var activities: [Activity] = []
-        public var subject: Int?
+        public var subjectId: Int?
         public var activitiesCount = 0
+        public var embeddedActivities: [Activity] = []
         public var createdAt = Date()
         public var updatedAt = Date()
 
@@ -1312,11 +1650,13 @@ extension Session {
                 name: name,
                 sessionName: sessionName,
                 qrcode: qrcode,
-                activities: activities,
-                subject: subject,
+                subjectId: subjectId,
                 activitiesCount: activitiesCount,
+                embeddedActivities: embeddedActivities,
                 createdAt: createdAt,
-                updatedAt: updatedAt
+                updatedAt: updatedAt,
+                // Built by hand, so there is no client to reach anything else through.
+                client: nil
             )
         }
     }
@@ -1366,7 +1706,9 @@ extension Subject {
                 activityCount: activityCount,
                 lastActivity: lastActivity,
                 createdAt: createdAt,
-                updatedAt: updatedAt
+                updatedAt: updatedAt,
+                // Built by hand, so there is no client to reach anything else through.
+                client: nil
             )
         }
     }
@@ -1410,16 +1752,20 @@ extension Activity {
 
     public struct PreviewBuilder {
         public var id = "preview-activity"
-        public var session = "preview-session"
+        public var sessionId = "preview-session"
         public var name: String? = "Preview Trial"
         public var status: String = "done"
         public var videos: [Video] = []
         public var results: [Activity.Result] = []
         public var activityType: ActivityTypeInfo?
+        public var subjectInfo: ActivitySubject?
         public var tags: [String] = []
         public var notes: String?
         public var createdBy: String?
         public var analysisStatus: String?
+        public var framerate: String?
+        public var filterFrequency: String?
+        public var coreEngine: String?
         public var trashed = false
         public var createdAt = Date()
         public var updatedAt = Date()
@@ -1427,19 +1773,25 @@ extension Activity {
         func build() -> Activity {
             Activity(
                 id: id,
-                session: session,
+                sessionId: sessionId,
                 name: name,
                 status: status,
                 videos: videos,
                 results: results,
                 activityType: activityType,
+                subjectInfo: subjectInfo,
                 tags: tags,
                 notes: notes,
                 createdBy: createdBy,
                 analysisStatus: analysisStatus,
+                framerate: framerate,
+                filterFrequency: filterFrequency,
+                coreEngine: coreEngine,
                 trashed: trashed,
                 createdAt: createdAt,
-                updatedAt: updatedAt
+                updatedAt: updatedAt,
+                // Built by hand, so there is no client to reach anything else through.
+                client: nil
             )
         }
     }
@@ -1674,6 +2026,48 @@ extension AnalysisData {
                 type: resultDataType,
                 data: data
             )
+        }
+    }
+}
+
+extension FetchedArtifacts {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var data: [ArtifactType: Data] = [.report: Data("%PDF".utf8)]
+        public var errors: [ArtifactType: ModelHealthError] = [
+            .data: .notAvailable("processing has not finished; try again later.")
+        ]
+
+        func build() -> FetchedArtifacts {
+            FetchedArtifacts(data: data, errors: errors)
+        }
+    }
+}
+
+extension DownloadedArtifacts {
+    public static func forPreview(
+        customizing: (inout PreviewBuilder) -> Void = { _ in }
+    ) -> Self {
+        var builder = PreviewBuilder()
+        customizing(&builder)
+        return builder.build()
+    }
+
+    public struct PreviewBuilder {
+        public var paths: [ArtifactType: URL] = [.report: URL(fileURLWithPath: "results/preview_report.pdf")]
+        public var errors: [ArtifactType: ModelHealthError] = [
+            .data: .notAvailable("processing has not finished; try again later.")
+        ]
+
+        func build() -> DownloadedArtifacts {
+            DownloadedArtifacts(paths: paths, errors: errors)
         }
     }
 }
