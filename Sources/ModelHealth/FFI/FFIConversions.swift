@@ -621,6 +621,15 @@ extension ActivityType {
 
         case .lunge:
             return 14
+
+        case .dropJumpLess:
+            return 15
+
+        case .cycling:
+            return 16
+
+        case .deceleration:
+            return 17
         }
     }
 
@@ -671,6 +680,15 @@ extension ActivityType {
 
         case 14:
             self = .lunge
+
+        case 15:
+            self = .dropJumpLess
+
+        case 16:
+            self = .cycling
+
+        case 17:
+            self = .deceleration
 
         default:
             return nil

@@ -1150,6 +1150,15 @@ public enum ActivityType: String, CaseIterable, Sendable {
 
     /// Lunge.
     case lunge = "Lunge"
+
+    /// Drop Vertical Jump - LESS Evaluation.
+    case dropJumpLess = "Drop Vertical Jump - LESS Evaluation"
+
+    /// Cycling.
+    case cycling = "Cycling"
+
+    /// Deceleration.
+    case deceleration = "Deceleration"
 }
 
 /// Per-recording settings that override the session-level config.
